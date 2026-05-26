@@ -7,7 +7,6 @@
     "glm",
     "libpng",
     "nlohmann-json",
-    "eigen3",
-    "tracy"
+    "eigen3"
   ]
 }
