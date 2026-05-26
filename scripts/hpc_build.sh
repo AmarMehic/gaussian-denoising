@@ -34,6 +34,11 @@ else
     git -C "$RENDERER_DIR" submodule update --init --recursive
 fi
 
+# 1b. Apply our headless overlay (removes X11/OpenXR dependencies).
+#     Idempotent — safe across re-runs.
+echo ">>> Applying renderer overlay (headless: no X11, no OpenXR) ..."
+REPO_ROOT="$REPO_ROOT" bash "$REPO_ROOT/scripts/patch_renderer.sh"
+
 # 2. Bootstrap vcpkg (submodule)
 VCPKG_DIR="$RENDERER_DIR/vcpkg"
 VCPKG_BIN="$VCPKG_DIR/vcpkg"
