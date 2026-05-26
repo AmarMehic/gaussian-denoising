@@ -2,7 +2,10 @@
   "name": "main",
   "version-string": "latest",
   "dependencies": [
-    "sdl2",
+    {
+      "name": "sdl2",
+      "default-features": false
+    },
     "glew",
     "glm",
     "libpng",
