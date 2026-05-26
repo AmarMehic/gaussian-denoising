@@ -41,6 +41,7 @@ run_with_driver() {
     echo "----- SDL_VIDEODRIVER=$drv -----"
     SDL_VIDEODRIVER="$drv" timeout 8 \
         apptainer exec --nv \
+            --cleanenv \
             --env SDL_VIDEODRIVER="$drv" \
             --bind "$REPO_ROOT:$REPO_ROOT" \
             --pwd "$REPO_ROOT/renderer/stochasticsplats" \

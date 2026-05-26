@@ -41,8 +41,13 @@ else
 fi
 
 # 3. Build renderer inside container.
+# --cleanenv: don't inherit the host's PATH/LIBRARY_PATH etc. Without this,
+# any 'module load' the user has done leaks into the container and the
+# build picks up CentOS-7 toolchain libs that aren't compatible with the
+# container's Ubuntu userspace (crt1.o missing, etc).
 echo ">>> [3/3] Building renderer inside container ..."
 apptainer exec \
+    --cleanenv \
     --bind "$REPO_ROOT:$REPO_ROOT" \
     --pwd "$REPO_ROOT" \
     "$SIF" \
