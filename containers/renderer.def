@@ -1,0 +1,73 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+# Apptainer/Singularity build environment for the StochasticSplats renderer.
+#
+# This image provides Ubuntu 22.04 + all the OpenGL / SDL2 / build-tool
+# packages the renderer needs. It does NOT contain the renderer itself —
+# source lives outside in the repo and is bind-mounted at build/run time.
+# We pinned Ubuntu 22.04 because its libsdl2-dev / libglew-dev / libglm-dev
+# all ship modern CMake config files (find_package CONFIG works out of the box).
+#
+# Build once on the HPC:
+#   bash scripts/build_container.sh
+# Then build the renderer inside it via scripts/build_renderer.sh.
+
+%post
+    set -euxo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        build-essential \
+        cmake \
+        git \
+        pkg-config \
+        ninja-build \
+        \
+        libsdl2-dev \
+        libglew-dev \
+        libglm-dev \
+        libpng-dev \
+        nlohmann-json3-dev \
+        libeigen3-dev \
+        \
+        libgl1-mesa-dev \
+        libegl1-mesa-dev \
+        libgles2-mesa-dev \
+        libglu1-mesa-dev \
+        \
+        libx11-dev \
+        libxext-dev \
+        libxrandr-dev \
+        libxrender-dev \
+        libxfixes-dev \
+        libxcursor-dev \
+        libxinerama-dev \
+        libxi-dev \
+        libxxf86vm-dev \
+        \
+        xvfb
+
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    # Keep stdout/stderr unbuffered so logs flush when run via apptainer exec.
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec "$@"
+
+%help
+    StochasticSplats build/run environment (Ubuntu 22.04 + OpenGL stack).
+
+    Build the renderer inside the container:
+        apptainer exec --bind $PWD:$PWD --pwd $PWD containers/renderer.sif \
+            bash scripts/build_renderer.sh
+
+    Run the renderer (GPU required, use --nv to expose host CUDA/GL driver):
+        apptainer exec --nv --bind $PWD:$PWD --pwd $PWD containers/renderer.sif \
+            renderer/stochasticsplats/build/splatapult <args>

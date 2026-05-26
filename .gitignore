@@ -8,3 +8,6 @@ renderer/
 .DS_Store
 
 plan.md
+# Built Apptainer images (large binary artifacts)
+containers/*.sif
+containers/*.img

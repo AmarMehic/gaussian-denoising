@@ -1,18 +1,17 @@
 # See BUILD.md for more info
-# Windows cheat sheet
-# > mkdir build
-# > cd build
-# > cmake -DSHIPPING=ON -DCMAKE_TOOLCHAIN_FILE="C:\msys64\home\hyperlogic\code\vcpkg\scripts\buildsystems\vcpkg.cmake" ..
-# > cmake --build . --config Release
-
 cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
 set(PROJECT_NAME splatapult)
 project(${PROJECT_NAME} LANGUAGES CXX)
 
 option(SHIPPING "Build for shipping" OFF)
 
-# X11 + OpenXR removed for headless HPC build (no display server, no VR).
-# See scripts/renderer_overlay/README.md in the parent project for context.
+# Overlay diff vs. upstream stochasticsplats/CMakeLists.txt:
+#   - find_package(X11 REQUIRED)         removed (no display server on HPC)
+#   - find_package(OpenXR ...)           removed (no VR, see xrbuddy stub)
+#   - X11_LIBRARIES and OpenXR::* link    removed
+#   - cxx_std_17 target features kept
+# Source/build via the Apptainer container in containers/renderer.def, which
+# provides SDL2/GLEW/glm/libpng/Eigen3/nlohmann-json via Ubuntu apt packages.
 
 if(WIN32)
     # kind of a hack, I want to be able to include glm/glm.hpp on windows and linux
@@ -83,11 +82,6 @@ add_executable(${PROJECT_NAME}
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
-
-# Define DISABLE_VR everywhere so the renderer's vr code is compiled out and
-# the bundled XrBuddy stub (overlay) is used instead of the original OpenXR
-# implementation.
-target_compile_definitions(${PROJECT_NAME} PRIVATE DISABLE_VR=1)
 
 if(WIN32)
     # Comment this out to see SDL_Log output for debugging

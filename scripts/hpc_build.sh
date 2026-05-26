@@ -1,70 +1,59 @@
 #!/bin/bash
-# Build the (unmodified) StochasticSplats renderer on Arnes HPC.
+# Orchestrator: build the Apptainer container (one time) and the renderer.
 #
-# Assumes scripts/hpc_env.sh has been sourced in this shell.
-# Run from the repo root:
-#   source scripts/hpc_env.sh
-#   bash scripts/hpc_build.sh
-#
-# vcpkg builds many dependencies from source the first time — this can
-# take 20-40 min. Prefer running on a compute node, e.g.:
+# Workflow:
 #   srun --partition=all --time=2:00:00 --cpus-per-task=8 --mem=16G --pty bash
-#   source scripts/hpc_env.sh
 #   bash scripts/hpc_build.sh
+#
+# Step 1 clones StochasticSplats if missing.
+# Step 2 builds the Apptainer container if missing (~10-20 min one-time).
+# Step 3 builds the renderer binary inside the container (fast, repeatable).
+#
+# The container provides Ubuntu 22.04 + all build deps via apt; no vcpkg.
 
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$PWD}"
 RENDERER_DIR="$REPO_ROOT/renderer/stochasticsplats"
 RENDERER_URL="https://github.com/ubc-vision/stochasticsplats.git"
+SIF="$REPO_ROOT/containers/renderer.sif"
 
-if ! command -v cmake >/dev/null; then
-    echo "ERROR: cmake not found. Did you 'source scripts/hpc_env.sh'?" >&2
-    exit 1
-fi
-
-# 1. Clone renderer if missing. The repo is excluded from our git tree
+# 1. Clone renderer if missing. Repo is git-ignored at our top level
 #    (.gitignore: renderer/) so each environment fetches its own copy.
 if [ ! -d "$RENDERER_DIR/.git" ]; then
-    echo ">>> Cloning StochasticSplats into $RENDERER_DIR ..."
+    echo ">>> [1/3] Cloning StochasticSplats into $RENDERER_DIR ..."
     mkdir -p "$REPO_ROOT/renderer"
-    git clone --recursive "$RENDERER_URL" "$RENDERER_DIR"
+    # Shallow but with submodules — vcpkg is no longer used, so the submodule
+    # is wasted bandwidth, but we keep --recursive in case the upstream repo
+    # ever moves real code into a submodule.
+    git clone --depth 1 --recurse-submodules --shallow-submodules \
+        "$RENDERER_URL" "$RENDERER_DIR"
 else
-    echo ">>> Renderer already cloned; updating submodules"
-    git -C "$RENDERER_DIR" submodule update --init --recursive
+    echo ">>> [1/3] Renderer already cloned at $RENDERER_DIR"
 fi
 
-# 1b. Apply our headless overlay (removes X11/OpenXR dependencies).
-#     Idempotent — safe across re-runs.
-echo ">>> Applying renderer overlay (headless: no X11, no OpenXR) ..."
-REPO_ROOT="$REPO_ROOT" bash "$REPO_ROOT/scripts/patch_renderer.sh"
-
-# 2. Bootstrap vcpkg (submodule)
-VCPKG_DIR="$RENDERER_DIR/vcpkg"
-VCPKG_BIN="$VCPKG_DIR/vcpkg"
-if [ ! -x "$VCPKG_BIN" ]; then
-    echo ">>> Bootstrapping vcpkg ..."
-    (cd "$VCPKG_DIR" && ./bootstrap-vcpkg.sh -disableMetrics)
+# 2. Build container if missing.
+if [ ! -f "$SIF" ]; then
+    echo ">>> [2/3] Building Apptainer container (one-time, ~10-20 min) ..."
+    bash "$REPO_ROOT/scripts/build_container.sh"
+else
+    echo ">>> [2/3] Container already built at $SIF"
 fi
 
-# 3. CMake configure + build
-BUILD_DIR="$RENDERER_DIR/build"
-mkdir -p "$BUILD_DIR"
-echo ">>> Configuring CMake (toolchain via vcpkg) ..."
-cmake -S "$RENDERER_DIR" -B "$BUILD_DIR" \
-    -G "Unix Makefiles" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_TOOLCHAIN_FILE="$VCPKG_DIR/scripts/buildsystems/vcpkg.cmake"
+# 3. Build renderer inside container.
+echo ">>> [3/3] Building renderer inside container ..."
+apptainer exec \
+    --bind "$REPO_ROOT:$REPO_ROOT" \
+    --pwd "$REPO_ROOT" \
+    "$SIF" \
+    bash "$REPO_ROOT/scripts/build_renderer.sh"
 
-JOBS="${JOBS:-$(nproc)}"
-echo ">>> Building with -j${JOBS} ..."
-cmake --build "$BUILD_DIR" --config Release -- -j"$JOBS"
-
-BIN="$BUILD_DIR/splatapult"
+BIN="$RENDERER_DIR/build/splatapult"
 if [ -x "$BIN" ]; then
-    echo ">>> SUCCESS: binary at $BIN"
+    echo
+    echo ">>> SUCCESS: $BIN"
     file "$BIN"
 else
-    echo ">>> FAIL: binary not found at $BIN" >&2
+    echo ">>> FAIL: $BIN missing" >&2
     exit 1
 fi
