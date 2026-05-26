@@ -57,7 +57,7 @@ BIN="$RENDERER_DIR/build/splatapult"
 if [ -x "$BIN" ]; then
     echo
     echo ">>> SUCCESS: $BIN"
-    file "$BIN"
+    ls -lh "$BIN"
 else
     echo ">>> FAIL: $BIN missing" >&2
     exit 1

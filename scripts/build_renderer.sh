@@ -37,7 +37,7 @@ cmake --build "$BUILD_DIR" --config Release -- -j"$JOBS"
 BIN="$BUILD_DIR/splatapult"
 if [ -x "$BIN" ]; then
     echo ">>> SUCCESS: $BIN"
-    file "$BIN"
+    ls -lh "$BIN"
 else
     echo ">>> FAIL: binary not found at $BIN" >&2
     exit 1
