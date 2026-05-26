@@ -14,7 +14,7 @@ From: ubuntu:22.04
 # Then build the renderer inside it via scripts/build_renderer.sh.
 
 %post
-    set -euxo pipefail
+    set -eux
     export DEBIAN_FRONTEND=noninteractive
 
     apt-get update
