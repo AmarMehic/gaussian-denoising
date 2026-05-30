@@ -458,3 +458,92 @@ work in the cheapest-render regime: at 1 spp it recovers +10.6 dB, tapering to
 +7.8 dB at 4 spp, with latency flat (~16 ms) across all levels — i.e. denoising
 cost is independent of input noise, exactly the property a real-time renderer
 wants.
+
+---
+
+## 11. Methods draft (report prose)
+
+> Draft narrative for the report's Method section — pairs the "how" with the
+> "what" in §10. Numbers/details match §2–§6.
+
+### 11.1 Data capture
+
+We render eight MipNeRF360 scenes (7k-splat versions, a mix of indoor and
+outdoor) with the stochastic-transparency WebGPU splatting renderer. For each of
+80 camera poses per scene (640 frames total, 512×512) we capture, in a single
+deterministic pass: three **noisy inputs** at 1, 2 and 4 samples-per-pixel
+(snapshots of the stochastic accumulator), a **depth** buffer, and a converged
+**~400-spp reference** that serves as the clean training target. Diversity was
+prioritized over raw count — eight distinct scenes generalize better than many
+views of one. We deliberately exclude albedo: in the stochastic-splat setting
+there is no lighting integral, so an albedo channel carries no extra signal here
+(a consequence of the renderer, not a general rule).
+
+### 11.2 Network input and architecture
+
+The denoiser takes a **4-channel input** — noisy RGB plus a per-image-normalized
+depth channel — and predicts the 3-channel clean RGB. The backbone is a U-Net
+(base width 32, GroupNorm, ~7.8M parameters) with the standard encoder/decoder
+and skip connections.
+
+The key design choice is the **output head**. Rather than regressing RGB
+directly (a *residual* head, which we found blur-prone), we use a
+**kernel-predicting (KPCN) head**: the final layer emits, for every pixel, the
+logits of an 11×11 filter kernel. We softmax-normalize each kernel and apply it
+to the noisy RGB neighborhood (via an unfold + weighted sum). Because the weights
+are normalized and non-negative, the output is a convex combination of *real*
+input pixels — the network can only *redistribute* existing radiance, never
+invent it, which makes the filter structurally edge-preserving and immune to the
+characteristic L1 blur of direct regression.
+
+### 11.3 Training
+
+We train per held-out scene under the leave-one-scene-out protocol (seven scenes
+train, one tests). Each sample randomly draws one of the {1, 2, 4}-spp noisy
+inputs (noise-level augmentation), so a single model is robust across sample
+counts. We optimize **L1** loss (an SSIM term was tested and slightly hurt — see
+§8) with Adam (lr 1e-4, cosine annealing), batch 16, 128×128 random crops, for
+100 epochs, with mixed-precision (fp16) on CUDA. Training one model takes ~10 min
+on a single Arnes HPC GPU.
+
+### 11.4 Baselines
+
+For a training-free reference we implement three classical filters in
+numpy/PIL — a Gaussian blur, a color bilateral, and a **depth-guided
+cross-bilateral** that uses the same noisy-RGB + depth inputs as the network
+(the canonical Monte-Carlo G-buffer filter, Mara 2017). Each filter's
+hyperparameters are grid-searched on the training split, frozen, and applied to
+the held-out test scene, so the comparison is against the strongest fair version
+of each. One implementation note: a naive bilateral fails at 1 spp (the high
+variance is mistaken for edges and preserved); we compute the range weights from
+a pre-smoothed guide image (joint-bilateral trick) to fix this.
+
+---
+
+## 12. Figure list (for the report)
+
+Proposed figures, in narrative order. Each maps to data we already have.
+
+1. **Pipeline / teaser** — renderer → {noisy 1-spp, depth, ~400-spp reference} →
+   U-Net → denoised. One row, sets up the whole problem. (Schematic + real crops.)
+2. **Qualitative comparison grid** — for both held-out scenes, a hard crop shown
+   as: noisy (1 spp) | tuned Gaussian | tuned cross-bilateral | **KPCN (ours)** |
+   reference. The money figure; pick a crop with a depth edge so the
+   edge-preservation is visible. Annotate PSNR/SSIM under each.
+3. **KPCN head schematic** — predict per-pixel 11×11 kernel → softmax → apply to
+   noisy neighborhood. Conveys *why* it can't blur (redistributes real pixels).
+4. **Head-swap bar chart** — residual vs KPCN, PSNR and SSIM side by side, same
+   data/loss. The single-variable proof that the head is the lever (+2.53 dB).
+5. **Main results table** — the §10.3 table (both scenes, KPCN vs best tuned
+   classical, + latency). Can be a table rather than a figure.
+6. **Data-scaling curve** — test PSNR vs n_train (4→7), showing diminishing
+   returns. Caption: "diminishing returns justify an architectural change, not
+   more data."
+7. **Noise-level curve** — input vs denoised PSNR at 1/2/4 spp (the §8 sweep),
+   showing the denoiser does the most work at the noisiest setting.
+8. **Quality–latency scatter** *(optional, strong)* — PSNR (y) vs ms/frame (x,
+   log) for KPCN and the classical filters; KPCN sits top-left (best quality,
+   real-time) while bilaterals sit far right (slow). One glance = the whole pitch.
+
+Priority if space is tight: **2, 4, 5, 6** carry the argument; 1/3 are
+explanatory; 7/8 are supporting.
