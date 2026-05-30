@@ -22,6 +22,30 @@ each frame randomly keeps or discards Gaussians according to opacity. A single
 frame (1 spp) is a noisy random draw; the clean image is the average of many
 draws.
 
+### Nature of the noise — spatial Monte Carlo, *not* motion-only
+A common misconception: "this noise only appears when objects move." That is a
+half-truth that conflates two different things, and it does **not** describe our
+problem.
+
+- **What we denoise is spatial Monte Carlo noise.** Stochastic transparency
+  replaces sorted alpha-blending with a random keep/discard decision per
+  fragment, so each pixel is a Monte Carlo *estimate* of the true color. At 1 spp
+  the variance is high → heavy per-pixel noise, **present in every single frame,
+  static or moving.** Our dataset is literally *static* poses (1/2/4 spp noisy vs
+  400-spp clean) — nothing moves, and the noise is fully there.
+- **Where "only when moving" comes from:** real-time stochastic renderers often
+  hide the noise with *temporal accumulation* (TAA-style averaging across
+  frames). On a static scene that averaging is free and converges to clean, so it
+  *looks* noise-free. Under motion, reprojection/accumulation breaks
+  (disocclusion, ghosting), the average resets, and the per-frame noise becomes
+  visible again. So a viewer perceives "noise appears when moving," but the noise
+  was always there per frame — motion just removes the temporal crutch hiding it.
+- **Why this matters for us (report point):** a per-frame learned denoiser is the
+  *alternative* to temporal accumulation. It cleans a single noisy frame
+  directly, so it behaves identically whether the scene is static or moving — no
+  motion vectors, no reprojection, no ghosting under motion. It degrades
+  gracefully under motion *because* it doesn't depend on temporal accumulation.
+
 ---
 
 ## 2. Dataset

@@ -124,8 +124,12 @@ def main():
             with torch.autocast(device_type='cuda', enabled=use_amp):
                 out = model(inp)
                 loss = loss_fn(out, tgt)
-                if args.ssim_weight > 0:
-                    loss = loss + args.ssim_weight * (1.0 - ssim_index(out, tgt))
+            # SSIM term must be computed in fp32, OUTSIDE autocast. Its variance
+            # terms (E[x^2] - E[x]^2) suffer catastrophic cancellation in fp16,
+            # producing inf/nan grads that GradScaler then skips -> the model
+            # silently under-trains. Casting out/tgt to float keeps it stable.
+            if args.ssim_weight > 0:
+                loss = loss + args.ssim_weight * (1.0 - ssim_index(out.float(), tgt.float()))
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
