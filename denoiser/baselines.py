@@ -21,6 +21,7 @@ Run on whatever is on disk (defaults to the test split, worst-case noise level):
 """
 
 import argparse
+import math
 import random
 import time
 from pathlib import Path
@@ -156,6 +157,104 @@ def xbilateral_baseline(noisy, depth, **kw):
 
 
 # ----------------------------------------------------------------------------
+# GPU (torch) implementations of the SAME filters. Identical math to the numpy
+# versions above (verified by --parity), but run on CUDA/MPS so the latency
+# comparison against the learned model is apples-to-apples (same device). torch
+# is imported lazily so the numpy path still runs on a torch-less laptop.
+# ----------------------------------------------------------------------------
+
+def resolve_device(name):
+    import torch
+    if name == 'auto':
+        if torch.cuda.is_available():
+            return torch.device('cuda')
+        if torch.backends.mps.is_available():
+            return torch.device('mps')
+        return torch.device('cpu')
+    return torch.device(name)
+
+
+def _to_nchw(img_hwc, device):
+    import torch
+    t = torch.from_numpy(np.ascontiguousarray(img_hwc, dtype=np.float32))
+    if t.dim() == 2:                       # HxW depth -> 1x1xHxW
+        t = t[None, None]
+    else:                                  # HxWxC -> 1xCxHxW
+        t = t.permute(2, 0, 1).unsqueeze(0)
+    return t.to(device)
+
+
+def _to_hwc(t):
+    return t[0].permute(1, 2, 0).contiguous().cpu().numpy()
+
+
+def _sep_blur_t(img, sigma):
+    """Separable Gaussian blur of [N,C,H,W] with reflect padding (mirrors _sep_blur)."""
+    import torch
+    import torch.nn.functional as F
+    if sigma <= 0:
+        return img
+    radius = max(1, int(round(3 * sigma)))
+    x = torch.arange(-radius, radius + 1, device=img.device, dtype=torch.float32)
+    k = torch.exp(-(x ** 2) / (2.0 * sigma ** 2))
+    k = k / k.sum()
+    c = img.shape[1]
+    kh = k.view(1, 1, 1, -1).expand(c, 1, 1, -1)
+    kv = k.view(1, 1, -1, 1).expand(c, 1, -1, 1)
+    out = F.pad(img, (radius, radius, 0, 0), mode='reflect')
+    out = F.conv2d(out, kh, groups=c)
+    out = F.pad(out, (0, 0, radius, radius), mode='reflect')
+    out = F.conv2d(out, kv, groups=c)
+    return out
+
+
+def _shift_t(x, dy, dx):
+    """Shift [N,C,H,W] by (dy,dx) with reflect padding (mirrors _shift)."""
+    import torch.nn.functional as F
+    r = max(abs(dy), abs(dx))
+    p = F.pad(x, (r, r, r, r), mode='reflect')
+    h, w = x.shape[-2:]
+    return p[..., r + dy:r + dy + h, r + dx:r + dx + w]
+
+
+def _bilateral_t(noisy, depth=None, radius=5, sigma_s=3.0, sigma_r=0.25,
+                 sigma_d=0.15, guide_sigma=1.5):
+    """Torch port of _bilateral. noisy [N,3,H,W], depth [N,1,H,W] or None."""
+    import torch
+    guide = _sep_blur_t(noisy, guide_sigma)
+    out = torch.zeros_like(noisy)
+    wsum = torch.zeros_like(noisy[:, :1])
+    inv_2ss = 1.0 / (2.0 * sigma_s ** 2)
+    inv_2sr = 1.0 / (2.0 * sigma_r ** 2)
+    inv_2sd = 1.0 / (2.0 * sigma_d ** 2)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            ws = math.exp(-(dy * dy + dx * dx) * inv_2ss)
+            nb = _shift_t(noisy, dy, dx)
+            gdiff = ((_shift_t(guide, dy, dx) - guide) ** 2).sum(1, keepdim=True)
+            wgt = ws * torch.exp(-gdiff * inv_2sr)
+            if depth is not None:
+                ddiff = (_shift_t(depth, dy, dx) - depth) ** 2
+                wgt = wgt * torch.exp(-ddiff * inv_2sd)
+            out = out + wgt * nb
+            wsum = wsum + wgt
+    return (out / wsum.clamp_min(1e-8)).clamp(0.0, 1.0)
+
+
+def apply_method_t(m, noisy_t, depth_t, params):
+    """GPU counterpart of apply_method; returns an [N,C,H,W] tensor."""
+    if m == 'noisy':
+        return noisy_t
+    if m == 'gauss':
+        return _sep_blur_t(noisy_t, **params).clamp(0.0, 1.0)
+    if m == 'bilateral':
+        return _bilateral_t(noisy_t, None, **params)
+    if m == 'xbilat':
+        return _bilateral_t(noisy_t, depth_t, **params)
+    raise ValueError(f'unknown method {m!r}')
+
+
+# ----------------------------------------------------------------------------
 # Methods + (optionally tuned) hyperparameters
 # ----------------------------------------------------------------------------
 
@@ -285,7 +384,15 @@ def main():
                     help='# train images used for tuning (bilateral ~1s/img).')
     ap.add_argument('--tune_metric', default='psnr', choices=['psnr', 'ssim'],
                     help='objective the grid search maximizes on the train split.')
+    ap.add_argument('--device', default='numpy',
+                    help="run the filters on 'numpy' (CPU reference, default) or a "
+                         "torch device: 'auto'/'cuda'/'mps'/'cpu'. GPU gives an "
+                         "apples-to-apples latency vs. the learned model.")
+    ap.add_argument('--parity', action='store_true',
+                    help='when on a torch device, also run the numpy reference and '
+                         'report max |GPU-CPU| per method (sanity: outputs match).')
     args = ap.parse_args()
+    use_torch = args.device != 'numpy'
 
     samples = discover_samples(args.data, args.scenes)
     if not samples:
@@ -308,30 +415,61 @@ def main():
         params = dict(DEFAULT_PARAMS)
         tag = 'default (untuned)'
 
-    print(f'{len(subset)} samples ({args.split} split) from {args.data}  |  params: {tag}')
-    print(f'{"method":<10} {"PSNR(dB)":>9} {"SSIM":>7} {"sec/img":>8}')
+    device = None
+    if use_torch:
+        import torch
+        device = resolve_device(args.device)
+        torch.set_grad_enabled(False)
+    backend = f'torch:{device}' if use_torch else 'numpy (CPU reference)'
+    print(f'{len(subset)} samples ({args.split} split) from {args.data}  |  '
+          f'params: {tag}  |  filter backend: {backend}')
+    print(f'{"method":<10} {"PSNR(dB)":>9} {"SSIM":>7} {"ms/img":>8}')
 
-    sums = {m: [0.0, 0.0, 0.0] for m in METHOD_NAMES}  # psnr, ssim, time
+    sums = {m: [0.0, 0.0, 0.0] for m in METHOD_NAMES}  # psnr, ssim, time(ms)
     # per_scene[scene][method] = [psnr, ssim, n]
     per_scene = {}
+    parity = {m: 0.0 for m in METHOD_NAMES} if (use_torch and args.parity) else None
     save_dir = Path(args.save) if args.save else None
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
 
-    for scene, stem, base, levels in subset:
+    def _sync():
+        if use_torch and device.type == 'cuda':
+            import torch
+            torch.cuda.synchronize()
+
+    warmed = not use_torch  # numpy needs no warmup; GPU compiles kernels on 1st call
+
+    for fi, (scene, stem, base, levels) in enumerate(subset):
         level = args.level if (args.level in levels) else min(levels)
         noisy = _load_noisy(base, level)
         clean = _load_rgb(f'{base}_clean.png')
         depth = _normalize_depth(_load_depth(f'{base}_depth.f32'))
+        if use_torch:
+            noisy_t = _to_nchw(noisy, device)
+            depth_t = _to_nchw(depth, device)
+            if not warmed:                 # untimed warmup so kernel compile isn't billed
+                for m in METHOD_NAMES:
+                    apply_method_t(m, noisy_t, depth_t, params[m])
+                _sync(); warmed = True
 
         sc = per_scene.setdefault(scene, {m: [0.0, 0.0, 0] for m in METHOD_NAMES})
         panels = []
         for m in METHOD_NAMES:
-            t0 = time.perf_counter()
-            out = apply_method(m, noisy, depth, params[m])
-            dt = time.perf_counter() - t0
+            if use_torch:
+                _sync(); t0 = time.perf_counter()
+                out_t = apply_method_t(m, noisy_t, depth_t, params[m])
+                _sync(); dt = time.perf_counter() - t0
+                out = _to_hwc(out_t)       # metrics on CPU numpy -> identical to ref
+                if parity is not None:
+                    ref = apply_method(m, noisy, depth, params[m])
+                    parity[m] = max(parity[m], float(np.abs(out - ref).max()))
+            else:
+                t0 = time.perf_counter()
+                out = apply_method(m, noisy, depth, params[m])
+                dt = time.perf_counter() - t0
             p, s = psnr(out, clean), ssim(out, clean)
-            sums[m][0] += p; sums[m][1] += s; sums[m][2] += dt
+            sums[m][0] += p; sums[m][1] += s; sums[m][2] += dt * 1000.0
             sc[m][0] += p; sc[m][1] += s; sc[m][2] += 1
             if save_dir:
                 panels.append(out)
@@ -344,7 +482,13 @@ def main():
     n = len(subset)
     for m in METHOD_NAMES:
         p, s, t = (v / n for v in sums[m])
-        print(f'{m:<10} {p:>9.2f} {s:>7.4f} {t:>8.3f}')
+        print(f'{m:<10} {p:>9.2f} {s:>7.4f} {t:>8.1f}')
+
+    if parity is not None:
+        print('\nparity vs numpy reference (max |GPU - CPU| per method; '
+              'want <~1e-3):')
+        for m in METHOD_NAMES:
+            print(f'  {m:<10} {parity[m]:.2e}')
 
     if len(per_scene) > 1:
         print('\n--- per-scene PSNR(dB) / SSIM by method ---')
