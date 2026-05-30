@@ -250,12 +250,26 @@ edge-preserving and cannot produce the L1 smear. This is the architecture lever
 the diminishing-returns ablation pointed to.
 
 **garden-7k held out** (noisy input 16.24 dB / 0.260):
-| method                | PSNR (dB) | SSIM   |
-|-----------------------|-----------|--------|
-| U-Net (L1 + 0.2·SSIM) | 24.01     | 0.568  |
-| **gauss (best)**      | **24.85** | **0.585** |
-| bilateral             | 24.37     | 0.487  |
-| xbilat                | 24.30     | 0.491  |
+| method                | PSNR (dB) | SSIM   | latency |
+|-----------------------|-----------|--------|---------|
+| U-Net residual (L1+0.2SSIM)| 24.01 | 0.568  | 15.4 ms |
+| gauss                 | 24.85     | 0.585  | —       |
+| bilateral             | 24.37     | 0.487  | 1219 ms |
+| xbilat                | 24.30     | 0.491  | 1306 ms |
+| **U-Net KPCN (pure L1)** | **25.23** | **0.611** | 18.6 ms |
+
+**Generalization confirmed.** KPCN wins on garden too: the residual head *lost*
+to a plain Gaussian here (24.01 < 24.85), but the KPCN head *beats* it on both
+PSNR (+0.38 dB) and SSIM (+0.026). Margin is smaller than counter (garden is more
+textured/harder, and the bar is gauss since the bilaterals are mistuned here),
+but it's a clean two-metric win on a second, very different (outdoor) unseen
+scene → the result is robust, not scene-specific.
+
+**Cross-scene summary (KPCN vs best classical):**
+| held-out | KPCN PSNR/SSIM | best classical | margin |
+|----------|----------------|----------------|--------|
+| counter (indoor)  | 27.17 / 0.724 | bilateral 26.00 / 0.661 | +1.17 dB / +0.063 |
+| garden (outdoor)  | 25.23 / 0.611 | gauss 24.85 / 0.585     | +0.38 dB / +0.026 |
 
 Notes for the report:
 - **SSIM loss is a negative result.** L1 + 0.2·(1−SSIM) was *worse* than pure L1
