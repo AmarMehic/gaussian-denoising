@@ -20,7 +20,7 @@ from dataset import (
     holdout_split,
     split_samples,
 )
-from metrics import psnr, ssim
+from metrics import psnr, ssim, ssim_index
 from model import UNetDenoiser
 
 
@@ -56,6 +56,9 @@ def main():
     ap.add_argument('--epochs', type=int, default=100)
     ap.add_argument('--batch', type=int, default=16)
     ap.add_argument('--lr', type=float, default=1e-4)
+    ap.add_argument('--ssim_weight', type=float, default=0.0,
+                    help='weight on the (1 - SSIM) structural term added to L1. '
+                         '0 = pure L1 (blur-prone); ~0.2 pushes detail/structure.')
     ap.add_argument('--crop', type=int, default=128)
     ap.add_argument('--base', type=int, default=32, help='U-Net base channel width')
     ap.add_argument('--workers', type=int, default=4)
@@ -65,6 +68,9 @@ def main():
 
     torch.manual_seed(args.seed)
     device = pick_device()
+    if device.type == 'cuda':
+        # Crop/eval sizes are fixed, so let cuDNN autotune the fastest kernels.
+        torch.backends.cudnn.benchmark = True
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f'device: {device}')
@@ -83,10 +89,14 @@ def main():
     val_ds = SplatDenoiseDataset(val_s, train=False)
 
     pin = device.type == 'cuda'
+    # persistent_workers + prefetch keep the input pipeline warm across the many
+    # short epochs (the loop is small, so per-epoch worker respawn would dominate).
+    loader_kw = dict(num_workers=args.workers, pin_memory=pin)
+    if args.workers > 0:
+        loader_kw.update(persistent_workers=True, prefetch_factor=4)
     train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
-                          num_workers=args.workers, pin_memory=pin, drop_last=True)
-    val_dl = DataLoader(val_ds, batch_size=1, shuffle=False,
-                        num_workers=args.workers, pin_memory=pin)
+                          drop_last=True, **loader_kw)
+    val_dl = DataLoader(val_ds, batch_size=1, shuffle=False, **loader_kw)
 
     model = UNetDenoiser(in_ch=4, out_ch=3, base=args.base).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -96,7 +106,9 @@ def main():
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     n_params = sum(p.numel() for p in model.parameters())
+    loss_desc = 'L1' if args.ssim_weight <= 0 else f'L1 + {args.ssim_weight}*(1-SSIM)'
     print(f'model: UNetDenoiser base={args.base}, {n_params/1e6:.2f}M params')
+    print(f'loss: {loss_desc}')
 
     best_psnr = -1.0
     log_path = out_dir / 'train_log.csv'
@@ -112,6 +124,8 @@ def main():
             with torch.autocast(device_type='cuda', enabled=use_amp):
                 out = model(inp)
                 loss = loss_fn(out, tgt)
+                if args.ssim_weight > 0:
+                    loss = loss + args.ssim_weight * (1.0 - ssim_index(out, tgt))
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()

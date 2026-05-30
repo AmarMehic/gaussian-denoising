@@ -7,9 +7,12 @@
 #SBATCH --time=03:00:00
 #SBATCH --output=results/denoiser/slurm-%j.out
 
-# Arnes HPC training job.  Submit from the repo root:  sbatch scripts/slurm_train.sh
-# PREREQUISITE: run `bash scripts/setup_env.sh` ONCE on the login node first
-# (it creates the $HOME/denoise-venv this job activates).
+# Arnes HPC training job.  Submit from the repo root:
+#     sbatch scripts/slurm_train.sh              # defaults to counter-7k
+#     sbatch scripts/slurm_train.sh garden-7k    # hold out a different scene
+# Each held-out scene writes to its own results/denoiser_<scene> dir, so you can
+# run several in parallel (one GPU each, ~10 min) without clobbering.
+# PREREQUISITE: run `bash scripts/setup_env.sh` ONCE on the login node first.
 set -e
 
 module purge
@@ -20,25 +23,28 @@ source "$HOME/denoise-venv/bin/activate"
 python -c "import torch, numpy, PIL; print('env ok: torch', torch.__version__, '| cuda', torch.cuda.is_available())" \
   || { echo 'ENV BROKEN -- run `bash scripts/setup_env.sh` on the login node first'; exit 1; }
 
-mkdir -p results/denoiser
-
 # Leave-one-scene-out: train on 7 scenes, test on the held-out one (unseen
 # geometry/content -> a true generalization number for the report).
-HOLDOUT=counter-7k
+HOLDOUT="${1:-counter-7k}"        # first sbatch arg, default counter-7k
+SSIM_W="${2:-0.2}"                # weight on the (1-SSIM) structural loss term
+OUT="results/denoiser_${HOLDOUT}"
+echo "holdout=$HOLDOUT  ssim_weight=$SSIM_W  out=$OUT"
+mkdir -p "$OUT"
 
 python denoiser/train.py \
   --data data/renders \
   --holdout "$HOLDOUT" \
+  --ssim_weight "$SSIM_W" \
   --epochs 100 \
   --batch 16 \
   --lr 1e-4 \
   --crop 128 \
   --base 32 \
   --workers 8 \
-  --out results/denoiser
+  --out "$OUT"
 
 # evaluate.py reads the held-out scene from the checkpoint automatically.
-python denoiser/evaluate.py --ckpt results/denoiser/best.pt --data data/renders
+python denoiser/evaluate.py --ckpt "$OUT/best.pt" --data data/renders
 
 # Classical baseline on the SAME held-out scene (apples-to-apples comparison).
 python denoiser/baselines.py --data data/renders --holdout "$HOLDOUT" --split test

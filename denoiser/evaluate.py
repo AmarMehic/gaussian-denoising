@@ -57,7 +57,10 @@ def main():
 
     den_p = den_s = base_p = base_s = 0.0
     latencies = []
-    for inp, tgt in test_dl:
+    # Per-scene accumulators: scene -> [den_psnr, den_ssim, base_psnr, base_ssim, n].
+    # batch_size=1 + shuffle=False, so the i-th batch aligns with test_s[i].
+    per_scene = {}
+    for i, (inp, tgt) in enumerate(test_dl):
         inp, tgt = inp.to(device), tgt.to(device)
 
         if device.type == 'cuda':
@@ -69,8 +72,13 @@ def main():
         latencies.append((time.time() - t0) * 1000)
 
         noisy_rgb = inp[:, :3]
-        den_p += psnr(out, tgt); den_s += ssim(out, tgt)
-        base_p += psnr(noisy_rgb, tgt); base_s += ssim(noisy_rgb, tgt)
+        dp, ds = psnr(out, tgt), ssim(out, tgt)
+        bp, bs = psnr(noisy_rgb, tgt), ssim(noisy_rgb, tgt)
+        den_p += dp; den_s += ds; base_p += bp; base_s += bs
+
+        scene = test_s[i][0]
+        acc = per_scene.setdefault(scene, [0.0, 0.0, 0.0, 0.0, 0])
+        acc[0] += dp; acc[1] += ds; acc[2] += bp; acc[3] += bs; acc[4] += 1
 
     n = len(test_s)
     # First call includes lazy kernel compilation; report the warm median.
@@ -81,6 +89,12 @@ def main():
     print(f'noisy  -> clean : PSNR {base_p/n:6.2f} dB   SSIM {base_s/n:.4f}   (baseline)')
     print(f'denoised        : PSNR {den_p/n:6.2f} dB   SSIM {den_s/n:.4f}')
     print(f'improvement     : +{(den_p-base_p)/n:.2f} dB   +{(den_s-base_s)/n:.4f}')
+
+    if len(per_scene) > 1:
+        print('\n--- per-scene (denoised PSNR/SSIM | noisy PSNR/SSIM) ---')
+        for scene in sorted(per_scene):
+            dp, ds, bp, bs, k = per_scene[scene]
+            print(f'{scene:<14} {dp/k:6.2f} {ds/k:.4f}  |  {bp/k:6.2f} {bs/k:.4f}  ({k})')
     print(f'latency / 512x512 frame: {median_ms:.1f} ms (median, warm) on {device}')
 
 

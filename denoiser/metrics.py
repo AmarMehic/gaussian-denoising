@@ -26,7 +26,9 @@ def _gaussian_window(window_size, sigma, channels, device, dtype):
     return win2d.expand(channels, 1, window_size, window_size).contiguous()
 
 
-def ssim(pred, target, window_size=11, sigma=1.5):
+def ssim_index(pred, target, window_size=11, sigma=1.5):
+    """Differentiable mean SSIM, returned as a **tensor** so it can be used
+    inside a loss (e.g. L1 + lambda*(1 - ssim_index))."""
     pred = _ensure_batched(pred).clamp(0, 1)
     target = _ensure_batched(target).clamp(0, 1)
     c = pred.shape[1]
@@ -44,4 +46,9 @@ def ssim(pred, target, window_size=11, sigma=1.5):
     c1, c2 = 0.01 ** 2, 0.03 ** 2
     ssim_map = ((2 * mu12 + c1) * (2 * sigma12 + c2)) / \
                ((mu1_sq + mu2_sq + c1) * (sigma1_sq + sigma2_sq + c2))
-    return ssim_map.mean().item()
+    return ssim_map.mean()
+
+
+def ssim(pred, target, window_size=11, sigma=1.5):
+    """Mean SSIM as a python float (for logging / metrics)."""
+    return ssim_index(pred, target, window_size, sigma).item()

@@ -200,6 +200,8 @@ def main():
     print(f'{"method":<10} {"PSNR(dB)":>9} {"SSIM":>7} {"sec/img":>8}')
 
     sums = {m: [0.0, 0.0, 0.0] for m in METHODS}  # psnr, ssim, time
+    # per_scene[scene][method] = [psnr, ssim, n]
+    per_scene = {}
     save_dir = Path(args.save) if args.save else None
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -210,14 +212,15 @@ def main():
         clean = _load_rgb(f'{base}_clean.png')
         depth = _normalize_depth(_load_depth(f'{base}_depth.f32'))
 
+        sc = per_scene.setdefault(scene, {m: [0.0, 0.0, 0] for m in METHODS})
         panels = []
         for m, fn in METHODS.items():
             t0 = time.perf_counter()
             out = fn(noisy, depth)
             dt = time.perf_counter() - t0
-            sums[m][0] += psnr(out, clean)
-            sums[m][1] += ssim(out, clean)
-            sums[m][2] += dt
+            p, s = psnr(out, clean), ssim(out, clean)
+            sums[m][0] += p; sums[m][1] += s; sums[m][2] += dt
+            sc[m][0] += p; sc[m][1] += s; sc[m][2] += 1
             if save_dir:
                 panels.append(out)
 
@@ -230,6 +233,15 @@ def main():
     for m in METHODS:
         p, s, t = (v / n for v in sums[m])
         print(f'{m:<10} {p:>9.2f} {s:>7.4f} {t:>8.3f}')
+
+    if len(per_scene) > 1:
+        print('\n--- per-scene PSNR(dB) / SSIM by method ---')
+        for scene in sorted(per_scene):
+            print(f'[{scene}]')
+            for m in METHODS:
+                p, s, k = per_scene[scene][m]
+                print(f'  {m:<10} {p/k:>9.2f} {s/k:>7.4f}  ({k})')
+
     if save_dir:
         print(f'wrote comparison strips (noisy|gauss|bilateral|xbilat|clean) to {save_dir}')
 
