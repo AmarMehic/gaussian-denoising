@@ -172,6 +172,40 @@ weakest → strongest:
    channel, so it stops smoothing across depth discontinuities. Uses the same
    noisy RGB + depth inputs as the U-Net.
 
+**Why this set (rationale for the report).** The baselines aren't arbitrary —
+they form a **ladder where each rung adds exactly one capability**, so the
+comparison reveals *what kind* of work the network is doing, not just whether it
+wins:
+
+| baseline   | capability it adds        | question it answers                          |
+|------------|---------------------------|----------------------------------------------|
+| `noisy`    | nothing (passthrough)     | input SNR — the floor improvement is measured against |
+| `gauss`    | pure low-pass smoothing   | does this problem just need *blurring*?      |
+| `bilateral`| edge-awareness (RGB range)| is *edge-preserving* smoothing enough?       |
+| `xbilat`   | geometry-awareness (depth)| can a hand-built filter using the *same depth input* do it? |
+
+Reading the ladder: *blur → edge-aware → geometry-aware → learned*, and you can
+point to exactly where the net lands and which classical capability it surpasses.
+
+- `gauss` is the "do you even need a net?" check. It exposed the **residual** head
+  as basically a fancy blur (residual *lost* to gauss on garden); KPCN beating
+  gauss means KPCN is doing something a blur can't.
+- `xbilat` is the most important rung: it's the **fair classical analog of the
+  U-Net**, using the *same* noisy-RGB + depth inputs. Beating it means "given
+  identical inputs, the *learned* per-pixel kernel exploits geometry better than
+  the best hand-tuned filter" — a far stronger claim than beating an RGB-only filter.
+
+This set is also the **canonical Monte-Carlo-rendering lineage**: guided/cross-
+bilateral over a G-buffer (depth/normal) is *the* real-time classical reference
+(Mara 2017), and is exactly what the kernel-predicting papers (Bako 2017 / KPCN)
+benchmarked against — so it's the defensible comparison for this problem.
+
+**Deliberately excluded:** temporal accumulation / TAA (needs multiple frames —
+out of scope for single-frame denoising); OIDN / neural denoisers (a *different*
+axis — "our net vs another net," not "net vs training-free classical"); median
+filters (MC noise is variance-like, not impulse, so the bilateral family fits the
+noise model better).
+
 **Key implementation finding:** a naive bilateral *fails* at 1 spp because the
 noise variance is so high the color-range term mistakes noise for edges and
 preserves it (≈19 dB, barely above noisy). Fix: compute the range/guide weights
@@ -232,17 +266,23 @@ not close the gap). Latency 15.4 ms / 512×512 frame (~65 fps) on the GPU.
 |---------------------------|-----------|--------|---------|
 | U-Net residual (pure L1)  | 24.64     | 0.615  | 15.4 ms |
 | U-Net residual (L1+0.2SSIM)| 24.32    | 0.610  | 15.4 ms |
-| gauss                     | 25.79     | 0.654  | —       |
-| bilateral                 | 26.00     | 0.661  | 1175 ms |
-| xbilat                    | 25.92     | 0.658  | 1316 ms |
+| gauss (tuned)             | 25.83     | 0.6635 | —       |
+| bilateral (tuned)         | 26.47     | 0.6852 | 570 ms  |
+| xbilat (tuned)            | 26.36     | 0.6816 | 654 ms  |
 | **U-Net KPCN (pure L1)**  | **27.17** | **0.724** | 18.6 ms |
+
+Baselines are **tuned on the train split** (grid-search, then frozen and applied
+to the held-out test scene — never tuned on test). Frozen params: gauss σ=1.5;
+bilateral σ_s=4, σ_r=0.1, guide σ=1.5; xbilat σ_s=4, σ_r=0.1, σ_d=0.2, guide σ=1.5.
+Tuning lifted the best classical from 26.00→26.47 dB, so this is the strongest
+fair version of the competition.
 
 **HEADLINE: the kernel-prediction (KPCN) head is the result.** Swapping ONLY the
 output head (residual→KPCN), same data/loss, lifted the same U-Net by
 **+2.53 dB / +0.109 SSIM** — more than the loss tweak or the whole 4→7 data curve
-(+1.28 dB) combined. KPCN at 27.17 dB **beats the best classical filter
-(bilateral 26.00) by +1.17 dB / +0.063 SSIM**, while being **~63× faster**
-(18.6 ms GPU vs 1175 ms numpy) and real-time (~54 fps). The residual U-Net *lost*
+(+1.28 dB) combined. KPCN at 27.17 dB **beats the best train-tuned classical filter
+(bilateral 26.47) by +0.70 dB / +0.039 SSIM**, while being **~30× faster**
+(18.6 ms GPU vs 570 ms numpy) and real-time (~54 fps). The residual U-Net *lost*
 to a Gaussian blur; the KPCN head *beats the depth-guided cross-bilateral*. SSIM
 gained the most (0.615→0.724), confirming the mechanism: a normalized per-pixel
 kernel can only redistribute real input pixels, so it is structurally
@@ -253,23 +293,32 @@ the diminishing-returns ablation pointed to.
 | method                | PSNR (dB) | SSIM   | latency |
 |-----------------------|-----------|--------|---------|
 | U-Net residual (L1+0.2SSIM)| 24.01 | 0.568  | 15.4 ms |
-| gauss                 | 24.85     | 0.585  | —       |
-| bilateral             | 24.37     | 0.487  | 1219 ms |
-| xbilat                | 24.30     | 0.491  | 1306 ms |
+| gauss (tuned)         | 24.80     | 0.5620 | —       |
+| bilateral (tuned)     | 24.92     | 0.5490 | 592 ms  |
+| xbilat (tuned)        | 24.82     | 0.5497 | 679 ms  |
 | **U-Net KPCN (pure L1)** | **25.23** | **0.611** | 18.6 ms |
 
+Baselines **tuned on the train split** (same protocol as counter): tuning fixed
+the previously mistuned bilateral (24.37→24.92 dB, 0.487→0.549 SSIM). After
+tuning the best classical is split — **bilateral leads PSNR (24.92), gauss leads
+SSIM (0.562)** — and KPCN still beats *both*: +0.31 dB over best-PSNR bilateral,
++0.049 SSIM over best-SSIM gauss.
+
 **Generalization confirmed.** KPCN wins on garden too: the residual head *lost*
-to a plain Gaussian here (24.01 < 24.85), but the KPCN head *beats* it on both
-PSNR (+0.38 dB) and SSIM (+0.026). Margin is smaller than counter (garden is more
-textured/harder, and the bar is gauss since the bilaterals are mistuned here),
-but it's a clean two-metric win on a second, very different (outdoor) unseen
-scene → the result is robust, not scene-specific.
+to a plain Gaussian here (24.01 < 24.80), but the KPCN head *beats* every
+train-tuned classical on both metrics. Margin is smaller than counter (garden is
+more textured/harder), but it's a clean two-metric win on a second, very
+different (outdoor) unseen scene → the result is robust, not scene-specific.
 
 **Cross-scene summary (KPCN vs best classical):**
 | held-out | KPCN PSNR/SSIM | best classical | margin |
 |----------|----------------|----------------|--------|
-| counter (indoor)  | 27.17 / 0.724 | bilateral 26.00 / 0.661 | +1.17 dB / +0.063 |
-| garden (outdoor)  | 25.23 / 0.611 | gauss 24.85 / 0.585     | +0.38 dB / +0.026 |
+| counter (indoor)  | 27.17 / 0.724 | bilateral 26.47 / 0.685 (tuned) | +0.70 dB / +0.039 |
+| garden (outdoor)  | 25.23 / 0.611 | bilateral 24.92 / gauss 0.562 (tuned) | +0.31 dB / +0.049 |
+
+Both rows use **train-tuned** classical baselines (grid-searched on the train
+split, frozen, applied to the held-out test scene). KPCN wins both metrics on
+both scenes against the strongest fair version of the competition.
 
 **Noise-level sweep (KPCN, counter-7k held out, `evaluate.py --level`):**
 | input spp | noisy PSNR/SSIM | denoised PSNR/SSIM | improvement |
@@ -291,10 +340,12 @@ Notes for the report:
   variance terms under AMP autocast → inf/nan grads silently skipped by
   GradScaler → model under-trained to 21.6 dB. Fixed by computing the SSIM term
   in fp32 outside autocast; the 24.32 above is the *correct* SSIM-loss number.)
-- **U-Net beats the (mistuned) bilateral filters on garden SSIM** (0.568 vs 0.49)
-  but loses to plain gauss — and the bilaterals are clearly mistuned on garden
-  (worse than gauss), so the classical column is currently inconsistent. Tuning
-  the baseline hyperparameters on the train split is needed for a fair compare.
+- **[RESOLVED] Baseline tuning done.** Earlier the garden bilaterals were
+  mistuned (0.49 SSIM, worse than gauss). The `--tune` mode now grid-searches each
+  filter on the *train* split, freezes the params, and applies them to the held-out
+  test scene — fixing garden bilateral to 24.92/0.549. KPCN beats every train-tuned
+  classical on both metrics on both scenes (see tables above). This refers to the
+  superseded *residual* U-Net; the headline result is the KPCN head.
 - Why the U-Net trails: residual/direct RGB regression with L1 is blur-prone;
   with only 7 training scenes the learned prior is data-starved (a hand-coded
   edge/depth filter needs no data). Two levers under investigation:
