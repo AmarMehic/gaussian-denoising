@@ -21,6 +21,7 @@ Run on whatever is on disk (defaults to the test split, worst-case noise level):
 """
 
 import argparse
+import random
 import time
 from pathlib import Path
 
@@ -155,16 +156,112 @@ def xbilateral_baseline(noisy, depth, **kw):
 
 
 # ----------------------------------------------------------------------------
-# Eval driver
+# Methods + (optionally tuned) hyperparameters
 # ----------------------------------------------------------------------------
 
-METHODS = {
-    'noisy': lambda n, d: n,
-    'gauss': lambda n, d: gaussian_baseline(n),
-    'bilateral': lambda n, d: bilateral_baseline(n),
-    'xbilat': lambda n, d: xbilateral_baseline(n, d),
+METHOD_NAMES = ['noisy', 'gauss', 'bilateral', 'xbilat']
+
+# Hand-picked defaults = the "untuned" baseline.
+DEFAULT_PARAMS = {
+    'noisy': {},
+    'gauss': {'sigma': 1.2},
+    'bilateral': {},   # _bilateral() signature defaults
+    'xbilat': {},
 }
 
+# Grids searched by --tune. Kept modest: the bilateral filters cost ~1s/img, so
+# (#configs x #tune images) is the time budget. radius is left at its default.
+TUNE_GRIDS = {
+    'gauss': [{'sigma': s} for s in (0.8, 1.0, 1.2, 1.5, 2.0)],
+    'bilateral': [
+        {'sigma_s': ss, 'sigma_r': sr, 'guide_sigma': gs}
+        for ss in (2.0, 3.0, 4.0)
+        for sr in (0.10, 0.15, 0.20, 0.30)
+        for gs in (1.0, 1.5)
+    ],
+    'xbilat': [
+        {'sigma_s': ss, 'sigma_r': sr, 'sigma_d': sd, 'guide_sigma': 1.5}
+        for ss in (2.0, 3.0, 4.0)
+        for sr in (0.10, 0.15, 0.20, 0.30)
+        for sd in (0.05, 0.10, 0.15, 0.20)
+    ],
+}
+
+
+def apply_method(m, noisy, depth, params):
+    if m == 'noisy':
+        return noisy
+    if m == 'gauss':
+        return gaussian_baseline(noisy, **params)
+    if m == 'bilateral':
+        return bilateral_baseline(noisy, **params)
+    if m == 'xbilat':
+        return xbilateral_baseline(noisy, depth, **params)
+    raise ValueError(f'unknown method {m!r}')
+
+
+# ----------------------------------------------------------------------------
+# Tuning (grid-search on the TRAIN split, freeze for the held-out test eval)
+# ----------------------------------------------------------------------------
+
+def _spread_subset(samples, limit, seed=0):
+    """Pick up to `limit` samples spread round-robin across scenes (stable)."""
+    by_scene = {}
+    for s in samples:
+        by_scene.setdefault(s[0], []).append(s)
+    rng = random.Random(seed)
+    pools = {sc: rng.sample(v, len(v)) for sc, v in by_scene.items()}
+    scenes = sorted(pools)
+    picks, i = [], 0
+    while len(picks) < limit and any(pools.values()):
+        sc = scenes[i % len(scenes)]
+        if pools[sc]:
+            picks.append(pools[sc].pop())
+        i += 1
+    return picks
+
+
+def _load_triple(sample, level_arg):
+    _, _, base, levels = sample
+    level = level_arg if (level_arg in levels) else min(levels)
+    noisy = _load_noisy(base, level)
+    clean = _load_rgb(f'{base}_clean.png')
+    depth = _normalize_depth(_load_depth(f'{base}_depth.f32'))
+    return noisy, clean, depth
+
+
+def tune_on_train(train_samples, level_arg, metric='psnr', limit=12, seed=0):
+    """Grid-search each tunable filter on a TRAIN subset; return chosen params.
+
+    FAIRNESS: tuning only ever sees TRAIN scenes (the same data the U-Net learns
+    from). The selected hyperparameters are then frozen and evaluated on the
+    held-out test scene -- never tuned on the test scene. This mirrors the
+    learned model's train/test protocol for an honest comparison.
+    """
+    pick = _spread_subset(train_samples, limit, seed=seed)
+    loaded = [_load_triple(s, level_arg) for s in pick]
+    score_fn = psnr if metric == 'psnr' else ssim
+    chosen = dict(DEFAULT_PARAMS)
+    n_scenes = len({s[0] for s in pick})
+    print(f'tuning on {len(loaded)} train images over {n_scenes} scenes '
+          f'(objective: {metric})')
+    for m in ('gauss', 'bilateral', 'xbilat'):
+        grid = TUNE_GRIDS[m]
+        best, best_score = None, -1e9
+        for params in grid:
+            sc = sum(score_fn(apply_method(m, n, d, params), c)
+                     for n, c, d in loaded) / len(loaded)
+            if sc > best_score:
+                best_score, best = sc, params
+        chosen[m] = best
+        print(f'  {m:<10} best train {metric} {best_score:6.3f}  ->  {best}  '
+              f'({len(grid)} configs)')
+    return chosen
+
+
+# ----------------------------------------------------------------------------
+# Eval driver
+# ----------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser()
@@ -180,26 +277,41 @@ def main():
                     help='cap number of samples (quick smoke test)')
     ap.add_argument('--save', default=None,
                     help='dir to write side-by-side comparison PNGs')
+    ap.add_argument('--tune', action='store_true',
+                    help='grid-search filter hyperparameters on the TRAIN split, '
+                         'freeze, then evaluate on the held-out test split '
+                         '(fair, apples-to-apples with the learned model).')
+    ap.add_argument('--tune_limit', type=int, default=12,
+                    help='# train images used for tuning (bilateral ~1s/img).')
+    ap.add_argument('--tune_metric', default='psnr', choices=['psnr', 'ssim'],
+                    help='objective the grid search maximizes on the train split.')
     args = ap.parse_args()
 
     samples = discover_samples(args.data, args.scenes)
     if not samples:
         raise SystemExit(f'no samples found under {args.data}')
     if args.split == 'all':
-        subset = samples
+        train_s, subset = samples, samples
     elif args.holdout:
-        _, val, test = holdout_split(samples, args.holdout)
+        train_s, val, test = holdout_split(samples, args.holdout)
         subset = test if args.split == 'test' else val
     else:
-        train, val, test = split_samples(samples)
+        train_s, val, test = split_samples(samples)
         subset = test if args.split == 'test' else val
     if args.limit:
         subset = subset[:args.limit]
 
-    print(f'{len(subset)} samples ({args.split} split) from {args.data}')
+    if args.tune:
+        params = tune_on_train(train_s, args.level, args.tune_metric, args.tune_limit)
+        tag = f'TUNED on train (objective {args.tune_metric})'
+    else:
+        params = dict(DEFAULT_PARAMS)
+        tag = 'default (untuned)'
+
+    print(f'{len(subset)} samples ({args.split} split) from {args.data}  |  params: {tag}')
     print(f'{"method":<10} {"PSNR(dB)":>9} {"SSIM":>7} {"sec/img":>8}')
 
-    sums = {m: [0.0, 0.0, 0.0] for m in METHODS}  # psnr, ssim, time
+    sums = {m: [0.0, 0.0, 0.0] for m in METHOD_NAMES}  # psnr, ssim, time
     # per_scene[scene][method] = [psnr, ssim, n]
     per_scene = {}
     save_dir = Path(args.save) if args.save else None
@@ -212,11 +324,11 @@ def main():
         clean = _load_rgb(f'{base}_clean.png')
         depth = _normalize_depth(_load_depth(f'{base}_depth.f32'))
 
-        sc = per_scene.setdefault(scene, {m: [0.0, 0.0, 0] for m in METHODS})
+        sc = per_scene.setdefault(scene, {m: [0.0, 0.0, 0] for m in METHOD_NAMES})
         panels = []
-        for m, fn in METHODS.items():
+        for m in METHOD_NAMES:
             t0 = time.perf_counter()
-            out = fn(noisy, depth)
+            out = apply_method(m, noisy, depth, params[m])
             dt = time.perf_counter() - t0
             p, s = psnr(out, clean), ssim(out, clean)
             sums[m][0] += p; sums[m][1] += s; sums[m][2] += dt
@@ -230,7 +342,7 @@ def main():
                 save_dir / f'{scene}_{stem}_baselines.png')
 
     n = len(subset)
-    for m in METHODS:
+    for m in METHOD_NAMES:
         p, s, t = (v / n for v in sums[m])
         print(f'{m:<10} {p:>9.2f} {s:>7.4f} {t:>8.3f}')
 
@@ -238,9 +350,14 @@ def main():
         print('\n--- per-scene PSNR(dB) / SSIM by method ---')
         for scene in sorted(per_scene):
             print(f'[{scene}]')
-            for m in METHODS:
+            for m in METHOD_NAMES:
                 p, s, k = per_scene[scene][m]
                 print(f'  {m:<10} {p/k:>9.2f} {s/k:>7.4f}  ({k})')
+
+    if args.tune:
+        print('\nfrozen params (selected on train, applied to test):')
+        for m in ('gauss', 'bilateral', 'xbilat'):
+            print(f'  {m:<10} {params[m]}')
 
     if save_dir:
         print(f'wrote comparison strips (noisy|gauss|bilateral|xbilat|clean) to {save_dir}')

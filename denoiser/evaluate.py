@@ -32,6 +32,9 @@ def main():
                     help='override the held-out test scene; defaults to whatever '
                          'the checkpoint was trained with.')
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--level', type=int, default=None,
+                    help='pin the input noise level (spp): 1, 2 or 4. Default '
+                         'None = worst case (1 spp / min available per sample).')
     args = ap.parse_args()
 
     device = pick_device()
@@ -53,8 +56,10 @@ def main():
         print(f'held-out test scene: {holdout!r}')
     else:
         _, _, test_s = split_samples(samples, seed=seed)
-    test_dl = DataLoader(SplatDenoiseDataset(test_s, train=False), batch_size=1)
-    print(f'test frames: {len(test_s)}')
+    test_dl = DataLoader(
+        SplatDenoiseDataset(test_s, train=False, fixed_level=args.level), batch_size=1)
+    lvl = f'{args.level} spp' if args.level else 'worst case (1 spp)'
+    print(f'test frames: {len(test_s)}  |  input noise level: {lvl}')
 
     den_p = den_s = base_p = base_s = 0.0
     latencies = []
