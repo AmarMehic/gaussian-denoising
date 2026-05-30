@@ -271,6 +271,19 @@ scene → the result is robust, not scene-specific.
 | counter (indoor)  | 27.17 / 0.724 | bilateral 26.00 / 0.661 | +1.17 dB / +0.063 |
 | garden (outdoor)  | 25.23 / 0.611 | gauss 24.85 / 0.585     | +0.38 dB / +0.026 |
 
+**Noise-level sweep (KPCN, counter-7k held out, `evaluate.py --level`):**
+| input spp | noisy PSNR/SSIM | denoised PSNR/SSIM | improvement |
+|-----------|-----------------|--------------------|-------------|
+| 1 (worst) | 16.61 / 0.300   | 27.17 / 0.724      | +10.56 dB / +0.424 |
+| 2         | 19.54 / 0.403   | 28.31 / 0.756      | +8.78 dB / +0.353  |
+| 4         | 21.12 / 0.468   | 28.89 / 0.771      | +7.77 dB / +0.303  |
+
+Reading: denoised quality rises with samples (27.2→28.9 dB), but the *gain over
+the input shrinks* (+10.6→+7.8 dB) — the denoiser does the most work at the
+noisiest 1-spp setting, exactly the cheap-render regime we target. Latency is
+flat (~16 ms) across levels — denoising cost is independent of input noise. The
+model trained with random {1,2,4}-spp augmentation, so all three are in-distribution.
+
 Notes for the report:
 - **SSIM loss is a negative result.** L1 + 0.2·(1−SSIM) was *worse* than pure L1
   on counter (PSNR & SSIM & val all down). Reverted to pure L1. (Caveat earlier:
