@@ -1,12 +1,23 @@
-# Ignore data/scenes/
+# Large data: scene splats and generated renders
 data/scenes/
+data/renders/
 
 # DS_Store
 .DS_Store
 
 plan.md
-# Built Apptainer images (large binary artifacts)
-containers/*.sif
-containers/*.img
 
 *.pdf
+*.pyc
+__pycache__/
+*.png
+*.jpg
+*.jpeg
+*.log
+*.zip
+*.tar.gz
+*.ipynb
+*.ipynb_checkpoints/
+
+# Results
+results/
