@@ -220,13 +220,52 @@ bicycle). *TODO: replace with held-out counter-7k numbers from the full run.*
   0.2888. Meaningless at 2 epochs (val PSNR still climbing, SSIM below noisy
   because half-trained output is mushy) — confirms only that the pipeline runs.
 
-### Full run (100 epochs) — **TODO**
-Fill in from `results/denoiser/{train_log.csv, slurm-*.out}`:
-- Final held-out **counter-7k**: noisy baseline PSNR/SSIM, U-Net PSNR/SSIM,
-  improvement.
-- U-Net vs. cross-bilateral baseline on counter-7k (headline comparison).
-- Inference latency.
-- Training curve (loss / val PSNR vs. epoch).
+### Full run (100 epochs) — held-out generalization, 2 scenes
+
+Headline finding: **the residual U-Net underperforms the classical filters on
+held-out scenes** — reproducibly, across two holdout scenes and two loss
+variants. The bottleneck is architecture/data, not the loss (the loss tweak did
+not close the gap). Latency 15.4 ms / 512×512 frame (~65 fps) on the GPU.
+
+**counter-7k held out** (noisy input 16.61 dB / 0.300):
+| method                | PSNR (dB) | SSIM   |
+|-----------------------|-----------|--------|
+| U-Net (pure L1)       | 24.94     | 0.626  |
+| U-Net (L1 + 0.2·SSIM) | 24.32     | 0.610  |
+| gauss                 | 25.79     | 0.654  |
+| **bilateral (best)**  | **26.00** | **0.661** |
+| xbilat                | 25.92     | 0.658  |
+
+**garden-7k held out** (noisy input 16.24 dB / 0.260):
+| method                | PSNR (dB) | SSIM   |
+|-----------------------|-----------|--------|
+| U-Net (L1 + 0.2·SSIM) | 24.01     | 0.568  |
+| **gauss (best)**      | **24.85** | **0.585** |
+| bilateral             | 24.37     | 0.487  |
+| xbilat                | 24.30     | 0.491  |
+
+Notes for the report:
+- **SSIM loss is a negative result.** L1 + 0.2·(1−SSIM) was *worse* than pure L1
+  on counter (PSNR & SSIM & val all down). Reverted to pure L1. (Caveat earlier:
+  a first SSIM-loss run was broken by fp16 catastrophic cancellation in the
+  variance terms under AMP autocast → inf/nan grads silently skipped by
+  GradScaler → model under-trained to 21.6 dB. Fixed by computing the SSIM term
+  in fp32 outside autocast; the 24.32 above is the *correct* SSIM-loss number.)
+- **U-Net beats the (mistuned) bilateral filters on garden SSIM** (0.568 vs 0.49)
+  but loses to plain gauss — and the bilaterals are clearly mistuned on garden
+  (worse than gauss), so the classical column is currently inconsistent. Tuning
+  the baseline hyperparameters on the train split is needed for a fair compare.
+- Why the U-Net trails: residual/direct RGB regression with L1 is blur-prone;
+  with only 7 training scenes the learned prior is data-starved (a hand-coded
+  edge/depth filter needs no data). Two levers under investigation:
+  (1) **kernel-prediction head** (KPCN-style: predict a normalized per-pixel
+  kernel applied to noisy RGB — cannot hallucinate blur, only redistribute
+  pixels → edge-preserving); (2) **more training scenes** (see ablation below).
+
+### Data-scaling ablation (4 → 7 training scenes, counter-7k held out) — **TODO**
+Running (`scripts/ablation_scenes.sh`). Fill in `test_psnr` vs n_train_scenes
+from `results/ablation/summary_counter-7k.txt`. Rising 4→7 ⇒ data-limited (more
+scenes help); flat ⇒ model-limited (change architecture, e.g. kernel head).
 
 ---
 

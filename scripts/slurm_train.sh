@@ -26,7 +26,9 @@ python -c "import torch, numpy, PIL; print('env ok: torch', torch.__version__, '
 # Leave-one-scene-out: train on 7 scenes, test on the held-out one (unseen
 # geometry/content -> a true generalization number for the report).
 HOLDOUT="${1:-counter-7k}"        # first sbatch arg, default counter-7k
-SSIM_W="${2:-0.2}"                # weight on the (1-SSIM) structural loss term
+SSIM_W="${2:-0.0}"                # weight on (1-SSIM) loss term; 0 = pure L1.
+                                  # Held-out tests showed L1+0.2*SSIM was WORSE
+                                  # than pure L1 (see notes.md S8), so default 0.
 OUT="results/denoiser_${HOLDOUT}"
 echo "holdout=$HOLDOUT  ssim_weight=$SSIM_W  out=$OUT"
 mkdir -p "$OUT"
