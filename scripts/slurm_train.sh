@@ -29,14 +29,19 @@ HOLDOUT="${1:-counter-7k}"        # first sbatch arg, default counter-7k
 SSIM_W="${2:-0.0}"                # weight on (1-SSIM) loss term; 0 = pure L1.
                                   # Held-out tests showed L1+0.2*SSIM was WORSE
                                   # than pure L1 (see notes.md S8), so default 0.
-OUT="results/denoiser_${HOLDOUT}"
-echo "holdout=$HOLDOUT  ssim_weight=$SSIM_W  out=$OUT"
+HEAD="${3:-residual}"             # output head: 'residual' (default) or 'kpcn'
+                                  # (kernel-predicting, edge-preserving filter).
+# Separate out dir per head so residual and kpcn runs don't clobber each other.
+SUFFIX=""; [ "$HEAD" != "residual" ] && SUFFIX="_${HEAD}"
+OUT="results/denoiser_${HOLDOUT}${SUFFIX}"
+echo "holdout=$HOLDOUT  ssim_weight=$SSIM_W  head=$HEAD  out=$OUT"
 mkdir -p "$OUT"
 
 python denoiser/train.py \
   --data data/renders \
   --holdout "$HOLDOUT" \
   --ssim_weight "$SSIM_W" \
+  --head "$HEAD" \
   --epochs 100 \
   --batch 16 \
   --lr 1e-4 \

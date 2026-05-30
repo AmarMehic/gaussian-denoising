@@ -61,6 +61,9 @@ def main():
                          '0 = pure L1 (blur-prone); ~0.2 pushes detail/structure.')
     ap.add_argument('--crop', type=int, default=128)
     ap.add_argument('--base', type=int, default=32, help='U-Net base channel width')
+    ap.add_argument('--head', default='residual', choices=['residual', 'kpcn'],
+                    help='output head: residual RGB (default) or kernel-predicting '
+                         '(KPCN, edge-preserving local-average filter).')
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--out', default='results/denoiser', help='checkpoint/log dir')
     ap.add_argument('--seed', type=int, default=0)
@@ -98,7 +101,7 @@ def main():
                           drop_last=True, **loader_kw)
     val_dl = DataLoader(val_ds, batch_size=1, shuffle=False, **loader_kw)
 
-    model = UNetDenoiser(in_ch=4, out_ch=3, base=args.base).to(device)
+    model = UNetDenoiser(in_ch=4, out_ch=3, base=args.base, head=args.head).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     loss_fn = nn.L1Loss()
@@ -107,7 +110,7 @@ def main():
 
     n_params = sum(p.numel() for p in model.parameters())
     loss_desc = 'L1' if args.ssim_weight <= 0 else f'L1 + {args.ssim_weight}*(1-SSIM)'
-    print(f'model: UNetDenoiser base={args.base}, {n_params/1e6:.2f}M params')
+    print(f'model: UNetDenoiser base={args.base} head={args.head}, {n_params/1e6:.2f}M params')
     print(f'loss: {loss_desc}')
 
     best_psnr = -1.0

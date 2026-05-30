@@ -38,13 +38,14 @@ def main():
     ckpt = torch.load(args.ckpt, map_location=device)
     ck_args = ckpt.get('args', {})
     base = ck_args.get('base', 32)
+    head = ck_args.get('head', 'residual')  # old checkpoints predate the flag
     # Mirror training's split so we evaluate on the exact same held-out test set.
     holdout = args.holdout or ck_args.get('holdout')
     seed = ck_args.get('seed', args.seed)
-    model = UNetDenoiser(in_ch=4, out_ch=3, base=base).to(device)
+    model = UNetDenoiser(in_ch=4, out_ch=3, base=base, head=head).to(device)
     model.load_state_dict(ckpt['model'])
     model.eval()
-    print(f'device: {device}, checkpoint: {args.ckpt} (base={base})')
+    print(f'device: {device}, checkpoint: {args.ckpt} (base={base}, head={head})')
 
     samples = discover_samples(args.data, args.scenes)
     if holdout:
