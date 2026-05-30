@@ -11,7 +11,12 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from dataset import SplatDenoiseDataset, discover_samples, split_samples
+from dataset import (
+    SplatDenoiseDataset,
+    discover_samples,
+    holdout_split,
+    split_samples,
+)
 from metrics import psnr, ssim
 from model import UNetDenoiser
 from train import pick_device
@@ -23,19 +28,30 @@ def main():
     ap.add_argument('--ckpt', default='results/denoiser/best.pt')
     ap.add_argument('--data', default='data/renders')
     ap.add_argument('--scenes', nargs='*', default=None)
+    ap.add_argument('--holdout', default=None,
+                    help='override the held-out test scene; defaults to whatever '
+                         'the checkpoint was trained with.')
     ap.add_argument('--seed', type=int, default=0)
     args = ap.parse_args()
 
     device = pick_device()
     ckpt = torch.load(args.ckpt, map_location=device)
-    base = ckpt.get('args', {}).get('base', 32)
+    ck_args = ckpt.get('args', {})
+    base = ck_args.get('base', 32)
+    # Mirror training's split so we evaluate on the exact same held-out test set.
+    holdout = args.holdout or ck_args.get('holdout')
+    seed = ck_args.get('seed', args.seed)
     model = UNetDenoiser(in_ch=4, out_ch=3, base=base).to(device)
     model.load_state_dict(ckpt['model'])
     model.eval()
     print(f'device: {device}, checkpoint: {args.ckpt} (base={base})')
 
     samples = discover_samples(args.data, args.scenes)
-    _, _, test_s = split_samples(samples, seed=args.seed)
+    if holdout:
+        _, _, test_s = holdout_split(samples, holdout, seed=seed)
+        print(f'held-out test scene: {holdout!r}')
+    else:
+        _, _, test_s = split_samples(samples, seed=seed)
     test_dl = DataLoader(SplatDenoiseDataset(test_s, train=False), batch_size=1)
     print(f'test frames: {len(test_s)}')
 

@@ -14,7 +14,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from dataset import SplatDenoiseDataset, discover_samples, split_samples
+from dataset import (
+    SplatDenoiseDataset,
+    discover_samples,
+    holdout_split,
+    split_samples,
+)
 from metrics import psnr, ssim
 from model import UNetDenoiser
 
@@ -44,6 +49,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--data', default='data/renders', help='renders root (scene subdirs)')
     ap.add_argument('--scenes', nargs='*', default=None, help='limit to these scenes')
+    ap.add_argument('--holdout', default=None,
+                    help='leave-one-scene-out: this scene is the entire test set '
+                         '(generalization to an unseen scene); the rest are '
+                         'split train/val. If unset, uses a per-scene pose split.')
     ap.add_argument('--epochs', type=int, default=100)
     ap.add_argument('--batch', type=int, default=16)
     ap.add_argument('--lr', type=float, default=1e-4)
@@ -63,7 +72,11 @@ def main():
     samples = discover_samples(args.data, args.scenes)
     if not samples:
         raise SystemExit(f'No samples found under {args.data}. Run the capture first.')
-    train_s, val_s, test_s = split_samples(samples, seed=args.seed)
+    if args.holdout:
+        train_s, val_s, test_s = holdout_split(samples, args.holdout, seed=args.seed)
+        print(f'leave-one-scene-out: holding out {args.holdout!r} as test')
+    else:
+        train_s, val_s, test_s = split_samples(samples, seed=args.seed)
     print(f'samples: {len(samples)} total -> {len(train_s)} train / {len(val_s)} val / {len(test_s)} test')
 
     train_ds = SplatDenoiseDataset(train_s, crop=args.crop, train=True)

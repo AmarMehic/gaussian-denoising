@@ -22,8 +22,13 @@ python -c "import torch, numpy, PIL; print('env ok: torch', torch.__version__, '
 
 mkdir -p results/denoiser
 
+# Leave-one-scene-out: train on 7 scenes, test on the held-out one (unseen
+# geometry/content -> a true generalization number for the report).
+HOLDOUT=counter-7k
+
 python denoiser/train.py \
   --data data/renders \
+  --holdout "$HOLDOUT" \
   --epochs 100 \
   --batch 16 \
   --lr 1e-4 \
@@ -32,4 +37,8 @@ python denoiser/train.py \
   --workers 8 \
   --out results/denoiser
 
+# evaluate.py reads the held-out scene from the checkpoint automatically.
 python denoiser/evaluate.py --ckpt results/denoiser/best.pt --data data/renders
+
+# Classical baseline on the SAME held-out scene (apples-to-apples comparison).
+python denoiser/baselines.py --data data/renders --holdout "$HOLDOUT" --split test

@@ -29,6 +29,8 @@ from data_utils import (  # noqa: F401
     _noisy_levels,
     _normalize_depth,
     discover_samples,
+    holdout_split,
+    scene_names,
     split_samples,
 )
 

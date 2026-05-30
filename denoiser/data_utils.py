@@ -90,7 +90,11 @@ def discover_samples(renders_root, scenes=None):
 
 
 def split_samples(samples, val_frac=0.1, test_frac=0.1, seed=0):
-    """Deterministic per-scene split so every scene appears in each subset."""
+    """Deterministic per-scene split so every scene appears in each subset.
+
+    Test frames here are *novel poses* of scenes the model also trains on. For a
+    true held-out-scene generalization test, use holdout_split instead.
+    """
     by_scene = {}
     for s in samples:
         by_scene.setdefault(s[0], []).append(s)
@@ -106,4 +110,40 @@ def split_samples(samples, val_frac=0.1, test_frac=0.1, seed=0):
         test += items[:n_test]
         val += items[n_test:n_test + n_val]
         train += items[n_test + n_val:]
+    return train, val, test
+
+
+def scene_names(samples):
+    """Sorted unique scene names present in a sample list."""
+    return sorted({s[0] for s in samples})
+
+
+def holdout_split(samples, holdout_scene, val_frac=0.1, seed=0):
+    """Leave-one-scene-out split: the whole `holdout_scene` becomes the test
+    set (measuring generalization to unseen geometry/content); the remaining
+    scenes are split into train + a small per-scene val set for monitoring.
+
+    Raises ValueError if `holdout_scene` isn't present, so a typo fails loudly
+    instead of silently producing an empty test set.
+    """
+    present = scene_names(samples)
+    if holdout_scene not in present:
+        raise ValueError(
+            f'holdout scene {holdout_scene!r} not found; available: {present}')
+
+    test = [s for s in samples if s[0] == holdout_scene]
+    rest = [s for s in samples if s[0] != holdout_scene]
+
+    by_scene = {}
+    for s in rest:
+        by_scene.setdefault(s[0], []).append(s)
+
+    train, val = [], []
+    rng = random.Random(seed)
+    for scene in sorted(by_scene):
+        items = sorted(by_scene[scene], key=lambda x: x[1])
+        rng.shuffle(items)
+        n_val = max(1, int(round(len(items) * val_frac)))
+        val += items[:n_val]
+        train += items[n_val:]
     return train, val, test

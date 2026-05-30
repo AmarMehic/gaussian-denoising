@@ -33,6 +33,7 @@ from data_utils import (
     _load_rgb,
     _normalize_depth,
     discover_samples,
+    holdout_split,
     split_samples,
 )
 
@@ -170,6 +171,9 @@ def main():
     ap.add_argument('--data', default='data/renders')
     ap.add_argument('--scenes', nargs='*', default=None)
     ap.add_argument('--split', default='test', choices=['test', 'val', 'all'])
+    ap.add_argument('--holdout', default=None,
+                    help='evaluate on this held-out scene (match the U-Net run '
+                         'for an apples-to-apples baseline).')
     ap.add_argument('--level', type=int, default=None,
                     help='noise spp level (default: worst available per sample)')
     ap.add_argument('--limit', type=int, default=None,
@@ -183,6 +187,9 @@ def main():
         raise SystemExit(f'no samples found under {args.data}')
     if args.split == 'all':
         subset = samples
+    elif args.holdout:
+        _, val, test = holdout_split(samples, args.holdout)
+        subset = test if args.split == 'test' else val
     else:
         train, val, test = split_samples(samples)
         subset = test if args.split == 'test' else val
