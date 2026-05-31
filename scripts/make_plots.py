@@ -114,33 +114,37 @@ def fig_noise_levels(out_dir):
 
 # ---------------------------------------------------------------------------
 # Figure 8: quality vs latency (counter-7k, tuned baselines). Log-x.
-# Note: KPCN latency is GPU; classical filters are CPU/numpy -> annotate.
+# ALL methods timed on the SAME GPU (classical filters re-implemented in torch,
+# verified bit-identical to numpy via --parity). Honest, apples-to-apples.
 # ---------------------------------------------------------------------------
 def fig_quality_latency(out_dir):
-    # (label, ms/frame, PSNR, color)
+    # (label, ms/frame on GPU, PSNR, color)
     pts = [
-        ('Gaussian',      6.0,  25.83, C_CLASS),
-        ('cross-bilat',   654., 26.36, C_CLASS),
-        ('bilateral',     570., 26.47, C_CLASS),
+        ('Gaussian',      0.5,  25.83, C_CLASS),
+        ('bilateral',     21.1, 26.47, C_CLASS),
+        ('cross-bilat',   32.2, 26.36, C_CLASS),
         ('KPCN (ours)',   18.6, 27.17, C_KPCN),
     ]
     fig, ax = plt.subplots(figsize=(5.8, 3.8))
     for label, ms, p, c in pts:
         ax.scatter(ms, p, s=90, color=c, edgecolor='black',
                    linewidth=0.6, zorder=3)
-        dx = -10 if label == 'KPCN (ours)' else 8
-        ha = 'right' if label == 'KPCN (ours)' else 'left'
+        if label == 'KPCN (ours)':       # point sits near the top -> label below
+            off, ha, va = (-12, -10), 'right', 'top'
+        else:
+            off, ha, va = (8, 6), 'left', 'bottom'
         ax.annotate(label, (ms, p), textcoords='offset points',
-                    xytext=(dx, 6), ha=ha, fontsize=9,
+                    xytext=off, ha=ha, va=va, fontsize=9,
                     fontweight='bold' if 'ours' in label else 'normal')
     ax.set_xscale('log')
-    ax.set_xlim(3, 1500)               # set BEFORE the band (log axis can't span 0)
-    ax.axvspan(3, 33, color='green', alpha=0.07)  # <33 ms ~ real-time (30 fps)
+    ax.set_xlim(0.3, 60)               # set BEFORE the band (log axis can't span 0)
+    ax.axvspan(0.3, 33, color='green', alpha=0.07)  # <33 ms ~ real-time (30 fps)
     ax.axvline(33, color='green', alpha=0.4, linewidth=0.8, linestyle=':')
-    ax.text(31, 25.85, '30 fps', fontsize=7, color='green', va='bottom', ha='right')
-    ax.set_xlabel('latency per frame (ms, log scale)')
+    ax.text(31, 25.9, '30 fps', fontsize=7, color='green', va='bottom', ha='right')
+    ax.set_xlabel('latency per frame (ms, log scale) — all on the same GPU')
     ax.set_ylabel('held-out PSNR (dB)')
-    ax.set_title('Best quality AND real-time (counter-7k)\nKPCN: GPU; classical: CPU/numpy',
+    ax.set_title('Best quality, competitive speed (counter-7k)\n'
+                 'all methods timed on the same GPU',
                  fontsize=10)
     ax.grid(alpha=0.3, which='both')
     fig.tight_layout()

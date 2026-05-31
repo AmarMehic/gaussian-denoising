@@ -266,9 +266,9 @@ not close the gap). Latency 15.4 ms / 512×512 frame (~65 fps) on the GPU.
 |---------------------------|-----------|--------|---------|
 | U-Net residual (pure L1)  | 24.64     | 0.615  | 15.4 ms |
 | U-Net residual (L1+0.2SSIM)| 24.32    | 0.610  | 15.4 ms |
-| gauss (tuned)             | 25.83     | 0.6635 | —       |
-| bilateral (tuned)         | 26.47     | 0.6852 | 570 ms  |
-| xbilat (tuned)            | 26.36     | 0.6816 | 654 ms  |
+| gauss (tuned)             | 25.83     | 0.6635 | 0.5 ms  |
+| bilateral (tuned)         | 26.47     | 0.6852 | 21.1 ms |
+| xbilat (tuned)            | 26.36     | 0.6816 | 32.2 ms |
 | **U-Net KPCN (pure L1)**  | **27.17** | **0.724** | 18.6 ms |
 
 Baselines are **tuned on the train split** (grid-search, then frozen and applied
@@ -277,12 +277,21 @@ bilateral σ_s=4, σ_r=0.1, guide σ=1.5; xbilat σ_s=4, σ_r=0.1, σ_d=0.2, gui
 Tuning lifted the best classical from 26.00→26.47 dB, so this is the strongest
 fair version of the competition.
 
+**Latency is now same-device (all on the GPU).** The classical filters were
+re-implemented in torch (`baselines.py --device cuda`) and verified bit-identical
+to the numpy reference (`--parity` max |GPU−CPU| ~1e-7), so quality is unchanged
+and only the timing is fair. On the same GPU, KPCN (18.6 ms) is **faster than both
+edge-aware bilateral filters** (21.1 / 32.2 ms) *and* higher quality; only the
+edge-blind Gaussian (0.5 ms) is faster, and it loses badly on quality. The old
+"~60× faster vs numpy" was a CPU-vs-GPU artifact — dropped. Honest story: **best
+quality, and among the fastest; all methods are real-time.**
+
 **HEADLINE: the kernel-prediction (KPCN) head is the result.** Swapping ONLY the
 output head (residual→KPCN), same data/loss, lifted the same U-Net by
 **+2.53 dB / +0.109 SSIM** — more than the loss tweak or the whole 4→7 data curve
 (+1.28 dB) combined. KPCN at 27.17 dB **beats the best train-tuned classical filter
-(bilateral 26.47) by +0.70 dB / +0.039 SSIM**, while being **~30× faster**
-(18.6 ms GPU vs 570 ms numpy) and real-time (~54 fps). The residual U-Net *lost*
+(bilateral 26.47) by +0.70 dB / +0.039 SSIM**, at **18.6 ms/frame (~54 fps) —
+faster than the bilateral filters on the same GPU** (21.1 / 32.2 ms). The residual U-Net *lost*
 to a Gaussian blur; the KPCN head *beats the depth-guided cross-bilateral*. SSIM
 gained the most (0.615→0.724), confirming the mechanism: a normalized per-pixel
 kernel can only redistribute real input pixels, so it is structurally
@@ -293,9 +302,9 @@ the diminishing-returns ablation pointed to.
 | method                | PSNR (dB) | SSIM   | latency |
 |-----------------------|-----------|--------|---------|
 | U-Net residual (L1+0.2SSIM)| 24.01 | 0.568  | 15.4 ms |
-| gauss (tuned)         | 24.80     | 0.5620 | —       |
-| bilateral (tuned)     | 24.92     | 0.5490 | 592 ms  |
-| xbilat (tuned)        | 24.82     | 0.5497 | 679 ms  |
+| gauss (tuned)         | 24.80     | 0.5620 | 0.5 ms  |
+| bilateral (tuned)     | 24.92     | 0.5490 | 21.7 ms |
+| xbilat (tuned)        | 24.82     | 0.5497 | 32.0 ms |
 | **U-Net KPCN (pure L1)** | **25.23** | **0.611** | 18.6 ms |
 
 Baselines **tuned on the train split** (same protocol as counter): tuning fixed
@@ -439,9 +448,13 @@ metrics and both held-out scenes:
 
 The margin is larger indoors, where smooth surfaces reward learned edge-aware
 filtering; the textured outdoor scene is harder, but KPCN still wins both metrics.
-Critically, it does so at **~18 ms/frame (real-time, ~54 fps)** — roughly **30–60×
-faster** than the bilateral filters (570–680 ms in our CPU reference), while those
-filters are *non-learned* and cannot improve with data.
+Critically, it does so at **~18.6 ms/frame (real-time, ~54 fps)**. We re-implemented
+the classical filters on the **same GPU** (verified bit-identical to the numpy
+reference, max difference ~1e-7), so the latency comparison is apples-to-apples:
+KPCN is **faster than both edge-aware bilateral filters** (21.1 / 32.2 ms) while
+beating them on quality; only the edge-blind Gaussian (0.5 ms) is faster, and it
+is far lower quality. All methods are real-time — the learned model simply gives
+the best quality at competitive speed.
 
 ### 10.4 Where the gains come from, and where they don't
 
@@ -542,8 +555,10 @@ Proposed figures, in narrative order. Each maps to data we already have.
 7. **Noise-level curve** — input vs denoised PSNR at 1/2/4 spp (the §8 sweep),
    showing the denoiser does the most work at the noisiest setting.
 8. **Quality–latency scatter** *(optional, strong)* — PSNR (y) vs ms/frame (x,
-   log) for KPCN and the classical filters; KPCN sits top-left (best quality,
-   real-time) while bilaterals sit far right (slow). One glance = the whole pitch.
+   log) for KPCN and the classical filters, ALL timed on the same GPU. KPCN sits
+   highest (best quality) and to the left of the bilaterals (also faster than
+   them); only the edge-blind Gaussian is faster but far lower quality. One glance:
+   best quality, competitive speed, all real-time.
 
 Priority if space is tight: **2, 4, 5, 6** carry the argument; 1/3 are
 explanatory; 7/8 are supporting.

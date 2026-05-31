@@ -28,8 +28,16 @@ def main():
 
     device = pick_device()
     ckpt = torch.load(args.ckpt, map_location=device)
-    width = ckpt.get('args', {}).get('base', 32)
-    model = UNetDenoiser(in_ch=4, out_ch=3, base=width).to(device)
+    # Rebuild the exact architecture the checkpoint was trained with. The head
+    # (residual vs kpcn) changes the final layer's shape, so loading a KPCN
+    # checkpoint into a default residual model would fail with a state_dict
+    # mismatch -- read it (and base width / kernel size) back from saved args.
+    cargs = ckpt.get('args', {})
+    width = cargs.get('base', 32)
+    head = cargs.get('head', 'residual')
+    ksize = cargs.get('kernel_size', 11)
+    model = UNetDenoiser(in_ch=4, out_ch=3, base=width,
+                         head=head, kernel_size=ksize).to(device)
     model.load_state_dict(ckpt['model'])
     model.eval()
 
