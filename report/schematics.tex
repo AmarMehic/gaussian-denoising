@@ -1,13 +1,11 @@
-% Schematic figures for the report: (1) the capture->train->infer pipeline,
-% (2) the kernel-predicting (KPCN) output head.
+% Schematic figure for the report: the capture->train->infer pipeline.
 %
-% Compile to two cropped PDFs (one per tikzpicture) with:
+% Compile to a single cropped PDF with:
 %     pdflatex schematics.tex
-% Produces schematics.pdf (page 1 = pipeline, page 2 = KPCN head). Use
-% \includegraphics[page=1]{schematics} / [page=2] in the report, or split with
-% `pdfseparate schematics.pdf fig-%d.pdf`.
+% Produces schematics.pdf (page 1 = pipeline). Use
+% \includegraphics[page=1]{schematics} (or just {schematics}) in the report.
 %
-% If you prefer to draw these in Excalidraw/draw.io instead, the box/arrow
+% If you prefer to draw this in Excalidraw/draw.io instead, the box/arrow
 % layout below doubles as a spec.
 
 \documentclass[tikz,border=6pt,multi=tikzpicture]{standalone}
@@ -60,31 +58,6 @@
     \node[draw,dashed,inner sep=4mm,fit=(noisy)(depth)(clean),
       label={[font=\scriptsize\itshape]above:4-channel input}] {};
   \end{scope}
-\end{tikzpicture}
-
-% =========================================================================
-% Figure 2: kernel-predicting (KPCN) output head
-% =========================================================================
-\begin{tikzpicture}[node distance=8mm and 16mm]
-  \node[net] (feat) {U-Net\\features};
-  \node[box,right=of feat] (conv) {$1{\times}1$ conv\\$\rightarrow K^2$ maps};
-  \node[box,right=of conv] (soft) {softmax\\(per pixel)};
-  \node[ours,right=of soft,minimum width=30mm] (apply)
-    {apply $K{\times}K$ kernel\\to noisy neighborhood\\(weighted sum)};
-  \node[data,right=of apply] (out) {denoised\\pixel};
-
-  \node[data,above=10mm of apply,minimum width=30mm] (noisy)
-    {noisy RGB\\$K{\times}K$ patch};
-
-  \draw[flow] (feat) -- (conv);
-  \draw[flow] (conv) -- (soft);
-  \draw[flow] (soft) -- node[font=\scriptsize,above]{per-pixel\\kernel} (apply);
-  \draw[flow] (noisy) -- (apply);
-  \draw[flow] (apply) -- (out);
-
-  \node[font=\scriptsize\itshape,below=4mm of apply,text width=58mm,align=center]
-    {normalized, non-negative weights $\Rightarrow$ convex combination of
-     \emph{real} input pixels: edge-preserving, cannot hallucinate blur};
 \end{tikzpicture}
 
 \end{document}

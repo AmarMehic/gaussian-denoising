@@ -21,3 +21,7 @@ __pycache__/
 
 # Results
 results/
+
+*.tex
+*.bib
+report/schematics.tex

@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from dataset import (
@@ -35,6 +36,13 @@ def main():
     ap.add_argument('--level', type=int, default=None,
                     help='pin the input noise level (spp): 1, 2 or 4. Default '
                          'None = worst case (1 spp / min available per sample).')
+    ap.add_argument('--half', action='store_true',
+                    help='run the conv body in fp16 (CUDA/MPS) for a free latency '
+                         'win. KPCN softmax/unfold stays fp32, so quality is ~unchanged.')
+    ap.add_argument('--scale', type=float, default=1.0,
+                    help='denoise at this fraction of native res (e.g. 0.5 = 256px) '
+                         'for a latency/quality tradeoff; output is upsampled back to '
+                         'full res for PSNR/SSIM. Latency is timed at the reduced res.')
     args = ap.parse_args()
 
     device = pick_device()
@@ -48,7 +56,10 @@ def main():
     model = UNetDenoiser(in_ch=4, out_ch=3, base=base, head=head).to(device)
     model.load_state_dict(ckpt['model'])
     model.eval()
-    print(f'device: {device}, checkpoint: {args.ckpt} (base={base}, head={head})')
+    if args.half and device.type in ('cuda', 'mps'):
+        model = model.half()
+    print(f'device: {device}, checkpoint: {args.ckpt} (base={base}, head={head}'
+          f'{", fp16" if args.half else ""})')
 
     samples = discover_samples(args.data, args.scenes)
     if holdout:
@@ -68,15 +79,38 @@ def main():
     per_scene = {}
     for i, (inp, tgt) in enumerate(test_dl):
         inp, tgt = inp.to(device), tgt.to(device)
+        full_hw = inp.shape[-2:]
+        # Feed the model fp16 when --half; keep `inp`/`tgt` fp32 so metrics below
+        # are computed in full precision (the cast is cheap and outside the timer).
+        inp_run = inp.half() if args.half else inp
+        # Optionally denoise at reduced resolution: shrink the 4-ch input here
+        # (outside the timer), time the forward at that res, then upsample the
+        # 3-ch output back to native res so PSNR/SSIM compare against the full tgt.
+        if args.scale != 1.0:
+            inp_run = F.interpolate(inp_run, scale_factor=args.scale,
+                                    mode='bilinear', align_corners=False)
 
+        # Both CUDA and MPS dispatch GPU work asynchronously, so we must block
+        # until the device is idle on BOTH sides of the timed region -- otherwise
+        # time.time() stops before the GPU finishes and the latency reads far too
+        # low (especially on MPS, which has no implicit sync here).
         if device.type == 'cuda':
             torch.cuda.synchronize()
+        elif device.type == 'mps':
+            torch.mps.synchronize()
         t0 = time.time()
-        out = model(inp).clamp(0, 1)
+        out = model(inp_run).clamp(0, 1)
         if device.type == 'cuda':
             torch.cuda.synchronize()
+        elif device.type == 'mps':
+            torch.mps.synchronize()
         latencies.append((time.time() - t0) * 1000)
+        proc_hw = tuple(inp_run.shape[-2:])  # resolution the network actually ran at
 
+        out = out.float()
+        if out.shape[-2:] != full_hw:
+            out = F.interpolate(out, size=full_hw, mode='bilinear',
+                                align_corners=False).clamp(0, 1)
         noisy_rgb = inp[:, :3]
         dp, ds = psnr(out, tgt), ssim(out, tgt)
         bp, bs = psnr(noisy_rgb, tgt), ssim(noisy_rgb, tgt)
@@ -101,7 +135,10 @@ def main():
         for scene in sorted(per_scene):
             dp, ds, bp, bs, k = per_scene[scene]
             print(f'{scene:<14} {dp/k:6.2f} {ds/k:.4f}  |  {bp/k:6.2f} {bs/k:.4f}  ({k})')
-    print(f'latency / 512x512 frame: {median_ms:.1f} ms (median, warm) on {device}')
+    ph, pw = proc_hw
+    note = f' (denoised at {pw}x{ph}, upsampled to {full_hw[1]}x{full_hw[0]})' \
+        if args.scale != 1.0 else ''
+    print(f'latency / {pw}x{ph} frame: {median_ms:.1f} ms (median, warm) on {device}{note}')
 
 
 if __name__ == '__main__':
