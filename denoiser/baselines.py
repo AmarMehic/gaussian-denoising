@@ -12,6 +12,11 @@ Baselines, weakest to strongest:
   xbilat    - depth-guided cross-bilateral filter (Mara 2017 aligned): the same
               spatial + range weighting, but the range term also includes the
               depth channel, so it stops smoothing across depth discontinuities.
+  atrous    - depth-guided edge-avoiding a-trous wavelet filter (Dammertz 2010):
+              a few 5x5 passes with the kernel dilated by 2^i (holes between taps),
+              so the effective support doubles each level (huge radius at low cost).
+              Same color+depth edge-stopping as xbilat. This is the spatial core of
+              SVGF and the strongest *real-time* classical baseline here.
 
 Run on whatever is on disk (defaults to the test split, worst-case noise level):
 
@@ -156,6 +161,55 @@ def xbilateral_baseline(noisy, depth, **kw):
     return _bilateral(noisy, depth=depth, **kw)
 
 
+# B3-spline row used by the a-trous wavelet transform (Dammertz 2010). The 5x5
+# separable kernel is the outer product of this with itself.
+_ATROUS_K = np.array([1.0, 4.0, 6.0, 4.0, 1.0], dtype=np.float32) / 16.0
+_ATROUS_OFF = (-2, -1, 0, 1, 2)
+
+
+def _atrous(noisy, depth=None, n_levels=5, sigma_r=0.25, sigma_d=0.15,
+            guide_sigma=1.5):
+    """Edge-avoiding a-trous wavelet filter (Dammertz 2010).
+
+    A few 5x5 passes; at level i the kernel taps are spaced 2^i apart ("holes"),
+    so the effective support doubles each pass and reaches a large radius in a
+    handful of passes (the spatial core of SVGF). Each pass keeps the same B3
+    spline weights but multiplies them by edge-stopping weights: a color term
+    against a pre-smoothed guide (so 1-spp noise isn't mistaken for an edge) and,
+    if `depth` is given, a depth term that stops smoothing across depth
+    discontinuities -- the same range weighting as the cross-bilateral.
+    """
+    inv_2sr = 1.0 / (2.0 * sigma_r ** 2)
+    inv_2sd = 1.0 / (2.0 * sigma_d ** 2)
+    out = noisy.astype(np.float32)
+    cdepth = depth[..., None] if depth is not None else None
+    for level in range(n_levels):
+        step = 1 << level                  # 1, 2, 4, ... (a-trous dilation)
+        guide = _sep_blur(out, guide_sigma)  # stable edge reference this pass
+        acc = np.zeros_like(out)
+        wsum = np.zeros((out.shape[0], out.shape[1], 1), dtype=np.float32)
+        for ky, oy in enumerate(_ATROUS_OFF):
+            for kx, ox in enumerate(_ATROUS_OFF):
+                hk = _ATROUS_K[ky] * _ATROUS_K[kx]   # B3-spline spatial weight
+                dy, dx = oy * step, ox * step
+                nb = _shift(out, dy, dx)
+                gdiff = np.sum((_shift(guide, dy, dx) - guide) ** 2,
+                               axis=2, keepdims=True)
+                wgt = hk * np.exp(-gdiff * inv_2sr)
+                if cdepth is not None:
+                    nd = _shift(depth, dy, dx)[..., None]
+                    ddiff = (nd - cdepth) ** 2
+                    wgt = wgt * np.exp(-ddiff * inv_2sd)
+                acc += wgt * nb
+                wsum += wgt
+        out = acc / np.maximum(wsum, 1e-8)
+    return np.clip(out, 0.0, 1.0)
+
+
+def atrous_baseline(noisy, depth, **kw):
+    return _atrous(noisy, depth=depth, **kw)
+
+
 # ----------------------------------------------------------------------------
 # GPU (torch) implementations of the SAME filters. Identical math to the numpy
 # versions above (verified by --parity), but run on CUDA/MPS so the latency
@@ -241,6 +295,35 @@ def _bilateral_t(noisy, depth=None, radius=5, sigma_s=3.0, sigma_r=0.25,
     return (out / wsum.clamp_min(1e-8)).clamp(0.0, 1.0)
 
 
+def _atrous_t(noisy, depth=None, n_levels=5, sigma_r=0.25, sigma_d=0.15,
+              guide_sigma=1.5):
+    """Torch port of _atrous. noisy [N,3,H,W], depth [N,1,H,W] or None."""
+    import torch
+    inv_2sr = 1.0 / (2.0 * sigma_r ** 2)
+    inv_2sd = 1.0 / (2.0 * sigma_d ** 2)
+    kvals = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0]
+    out = noisy
+    for level in range(n_levels):
+        step = 1 << level
+        guide = _sep_blur_t(out, guide_sigma)
+        acc = torch.zeros_like(out)
+        wsum = torch.zeros_like(out[:, :1])
+        for ky, oy in enumerate(_ATROUS_OFF):
+            for kx, ox in enumerate(_ATROUS_OFF):
+                hk = kvals[ky] * kvals[kx]
+                dy, dx = oy * step, ox * step
+                nb = _shift_t(out, dy, dx)
+                gdiff = ((_shift_t(guide, dy, dx) - guide) ** 2).sum(1, keepdim=True)
+                wgt = hk * torch.exp(-gdiff * inv_2sr)
+                if depth is not None:
+                    ddiff = (_shift_t(depth, dy, dx) - depth) ** 2
+                    wgt = wgt * torch.exp(-ddiff * inv_2sd)
+                acc = acc + wgt * nb
+                wsum = wsum + wgt
+        out = acc / wsum.clamp_min(1e-8)
+    return out.clamp(0.0, 1.0)
+
+
 def apply_method_t(m, noisy_t, depth_t, params):
     """GPU counterpart of apply_method; returns an [N,C,H,W] tensor."""
     if m == 'noisy':
@@ -251,6 +334,8 @@ def apply_method_t(m, noisy_t, depth_t, params):
         return _bilateral_t(noisy_t, None, **params)
     if m == 'xbilat':
         return _bilateral_t(noisy_t, depth_t, **params)
+    if m == 'atrous':
+        return _atrous_t(noisy_t, depth_t, **params)
     raise ValueError(f'unknown method {m!r}')
 
 
@@ -258,7 +343,7 @@ def apply_method_t(m, noisy_t, depth_t, params):
 # Methods + (optionally tuned) hyperparameters
 # ----------------------------------------------------------------------------
 
-METHOD_NAMES = ['noisy', 'gauss', 'bilateral', 'xbilat']
+METHOD_NAMES = ['noisy', 'gauss', 'bilateral', 'xbilat', 'atrous']
 
 # Hand-picked defaults = the "untuned" baseline.
 DEFAULT_PARAMS = {
@@ -266,6 +351,7 @@ DEFAULT_PARAMS = {
     'gauss': {'sigma': 1.2},
     'bilateral': {},   # _bilateral() signature defaults
     'xbilat': {},
+    'atrous': {},      # _atrous() signature defaults
 }
 
 # Grids searched by --tune. Kept modest: the bilateral filters cost ~1s/img, so
@@ -284,6 +370,12 @@ TUNE_GRIDS = {
         for sr in (0.10, 0.15, 0.20, 0.30)
         for sd in (0.05, 0.10, 0.15, 0.20)
     ],
+    'atrous': [
+        {'n_levels': nl, 'sigma_r': sr, 'sigma_d': sd, 'guide_sigma': 1.5}
+        for nl in (3, 4, 5)
+        for sr in (0.10, 0.15, 0.25)
+        for sd in (0.05, 0.10, 0.20)
+    ],
 }
 
 
@@ -296,6 +388,8 @@ def apply_method(m, noisy, depth, params):
         return bilateral_baseline(noisy, **params)
     if m == 'xbilat':
         return xbilateral_baseline(noisy, depth, **params)
+    if m == 'atrous':
+        return atrous_baseline(noisy, depth, **params)
     raise ValueError(f'unknown method {m!r}')
 
 
@@ -344,7 +438,7 @@ def tune_on_train(train_samples, level_arg, metric='psnr', limit=12, seed=0):
     n_scenes = len({s[0] for s in pick})
     print(f'tuning on {len(loaded)} train images over {n_scenes} scenes '
           f'(objective: {metric})')
-    for m in ('gauss', 'bilateral', 'xbilat'):
+    for m in ('gauss', 'bilateral', 'xbilat', 'atrous'):
         grid = TUNE_GRIDS[m]
         best, best_score = None, -1e9
         for params in grid:
@@ -500,11 +594,12 @@ def main():
 
     if args.tune:
         print('\nfrozen params (selected on train, applied to test):')
-        for m in ('gauss', 'bilateral', 'xbilat'):
+        for m in ('gauss', 'bilateral', 'xbilat', 'atrous'):
             print(f'  {m:<10} {params[m]}')
 
     if save_dir:
-        print(f'wrote comparison strips (noisy|gauss|bilateral|xbilat|clean) to {save_dir}')
+        print('wrote comparison strips '
+              f'(noisy|gauss|bilateral|xbilat|atrous|clean) to {save_dir}')
 
 
 if __name__ == '__main__':
