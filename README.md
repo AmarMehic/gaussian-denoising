@@ -31,10 +31,34 @@ python denoiser/inference.py --ckpt results/denoiser/best.pt
 `evaluate.py` supports `--scale` (denoise at reduced resolution and upsample) and
 `--half` (fp16 conv body on CUDA/MPS) for a latency/quality knob.
 
+## Live browser demo
+
+A live demo renders a scene at 1 spp and denoises it in real time in the browser
+with onnxruntime-web (WebGPU backend) — the same KPCN model, exported to ONNX:
+
+```bash
+# export the trained checkpoint to a self-contained ONNX (web_demo/denoiser.onnx)
+python denoiser/export_onnx.py --ckpt results/denoiser/best.pt
+
+# serve the repo root, then open the demo in Chrome
+python3 scripts/capture_server.py
+# http://localhost:8000/webgpu-splatting-dithering-nrg/demo.html?scene=garden-7k
+```
+
+Use `?size=256|384|512` and `?spp=N` to trade quality for speed. The prebuilt
+ONNX is also attached to the GitHub Release.
+
 ## Data and weights
 
-The renders (`data/`) and trained checkpoints are not committed. Trained KPCN
-weights are published as a [GitHub Release](../../releases/tag/checkpoints-v1).
+The renders (`data/`) and trained checkpoints are not committed. The trained KPCN
+weights (PyTorch `.pt` and the browser `.onnx`) are published as a
+[GitHub Release](../../releases/tag/checkpoints-v1).
+
+## License
+
+MIT (see [LICENSE](LICENSE)). The renderer in `webgpu-splatting-dithering-nrg/`
+(excluding the `capture.*`/`demo.*` files added here) is by Žiga Lesar and its
+rights remain with its author.
 
 ## Credits
 

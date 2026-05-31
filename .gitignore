@@ -22,6 +22,9 @@ __pycache__/
 # Results
 results/
 
+# Generated ONNX model for the web demo (published as a GitHub Release asset)
+web_demo/
+
 *.tex
 *.bib
 report/schematics.tex
