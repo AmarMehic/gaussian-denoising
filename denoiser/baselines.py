@@ -423,27 +423,42 @@ def _load_triple(sample, level_arg):
     return noisy, clean, depth
 
 
-def tune_on_train(train_samples, level_arg, metric='psnr', limit=12, seed=0):
+def tune_on_train(train_samples, level_arg, metric='psnr', limit=12, seed=0,
+                  device=None):
     """Grid-search each tunable filter on a TRAIN subset; return chosen params.
 
     FAIRNESS: tuning only ever sees TRAIN scenes (the same data the U-Net learns
     from). The selected hyperparameters are then frozen and evaluated on the
     held-out test scene -- never tuned on the test scene. This mirrors the
     learned model's train/test protocol for an honest comparison.
+
+    If `device` is a torch device the grid search runs the filters on the GPU
+    (same math as the numpy path, verified by --parity), which is the slow part
+    of tuning -- the metric itself stays on numpy CPU (it is cheap by
+    comparison). Each train image is uploaded once and reused across all configs.
     """
     pick = _spread_subset(train_samples, limit, seed=seed)
     loaded = [_load_triple(s, level_arg) for s in pick]
     score_fn = psnr if metric == 'psnr' else ssim
     chosen = dict(DEFAULT_PARAMS)
     n_scenes = len({s[0] for s in pick})
+    backend = f'torch:{device}' if device is not None else 'numpy CPU'
     print(f'tuning on {len(loaded)} train images over {n_scenes} scenes '
-          f'(objective: {metric})')
+          f'(objective: {metric}, backend: {backend})')
+    loaded_t = None
+    if device is not None:                 # upload each image once, reuse per config
+        loaded_t = [(_to_nchw(n, device), _to_nchw(d, device), c)
+                    for n, c, d in loaded]
     for m in ('gauss', 'bilateral', 'xbilat', 'atrous'):
         grid = TUNE_GRIDS[m]
         best, best_score = None, -1e9
         for params in grid:
-            sc = sum(score_fn(apply_method(m, n, d, params), c)
-                     for n, c, d in loaded) / len(loaded)
+            if loaded_t is not None:
+                sc = sum(score_fn(_to_hwc(apply_method_t(m, nt, dt, params)), c)
+                         for nt, dt, c in loaded_t) / len(loaded_t)
+            else:
+                sc = sum(score_fn(apply_method(m, n, d, params), c)
+                         for n, c, d in loaded) / len(loaded)
             if sc > best_score:
                 best_score, best = sc, params
         chosen[m] = best
@@ -502,18 +517,20 @@ def main():
     if args.limit:
         subset = subset[:args.limit]
 
-    if args.tune:
-        params = tune_on_train(train_s, args.level, args.tune_metric, args.tune_limit)
-        tag = f'TUNED on train (objective {args.tune_metric})'
-    else:
-        params = dict(DEFAULT_PARAMS)
-        tag = 'default (untuned)'
-
     device = None
     if use_torch:
         import torch
         device = resolve_device(args.device)
         torch.set_grad_enabled(False)
+
+    if args.tune:
+        params = tune_on_train(train_s, args.level, args.tune_metric,
+                               args.tune_limit, device=device)
+        tag = f'TUNED on train (objective {args.tune_metric})'
+    else:
+        params = dict(DEFAULT_PARAMS)
+        tag = 'default (untuned)'
+
     backend = f'torch:{device}' if use_torch else 'numpy (CPU reference)'
     print(f'{len(subset)} samples ({args.split} split) from {args.data}  |  '
           f'params: {tag}  |  filter backend: {backend}')
