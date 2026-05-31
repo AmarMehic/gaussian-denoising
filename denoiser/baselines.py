@@ -372,8 +372,8 @@ TUNE_GRIDS = {
     ],
     'atrous': [
         {'n_levels': nl, 'sigma_r': sr, 'sigma_d': sd, 'guide_sigma': 1.5}
-        for nl in (3, 4, 5)
-        for sr in (0.10, 0.15, 0.25)
+        for nl in (1, 2, 3, 4, 5)              # widened down: 3 was hitting the floor
+        for sr in (0.05, 0.10, 0.15, 0.25)     # added 0.05 (tighter color edge stop)
         for sd in (0.05, 0.10, 0.20)
     ],
 }
